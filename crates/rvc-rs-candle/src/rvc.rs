@@ -82,7 +82,7 @@ impl RvcSynthesizer {
         let g = self.speakers.forward(&sid)?.unsqueeze(2)?;
         let (mean, logs) = self.text.forward(&phone, &coarse)?;
         let noise = Tensor::randn(0f32, 1f32, mean.shape(), &self.device)?;
-        let sampled = ((logs.exp()? * noise)? * 0.66666)?;
+        let sampled = ((logs.exp()? * noise)? * input.noise_scale as f64)?;
         let z_p = (&mean + sampled)?;
         let z = self.flow.reverse(&z_p, &g)?;
         self.decoder.forward(&z, &f0, &g, self.sample_rate)

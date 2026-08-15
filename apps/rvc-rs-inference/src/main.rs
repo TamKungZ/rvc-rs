@@ -3,7 +3,9 @@
 use eframe::egui;
 use rfd::FileDialog;
 use rvc_rs_core::ComputeDevice;
-use rvc_rs_engine::{Engine, EngineConfig, EngineState, ModelFiles, OfflineJob, OfflineReport};
+use rvc_rs_engine::{
+    Engine, EngineConfig, EngineState, ModelFiles, OfflineJob, OfflineReport, QualityPreset,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -30,14 +32,33 @@ enum ConversionMode {
     Realtime,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 struct SavedForm {
     mode: ConversionMode,
+    preset: QualityPreset,
     config: EngineConfig,
     checkpoint: String,
     index: String,
     input_audio: String,
     output_audio: String,
+}
+
+impl Default for SavedForm {
+    fn default() -> Self {
+        let preset = QualityPreset::Balanced;
+        let mut config = EngineConfig::default();
+        preset.apply(&mut config);
+        Self {
+            mode: ConversionMode::default(),
+            preset,
+            config,
+            checkpoint: String::new(),
+            index: String::new(),
+            input_audio: String::new(),
+            output_audio: String::new(),
+        }
+    }
 }
 
 struct InferenceApp {
@@ -201,6 +222,37 @@ impl InferenceApp {
             .num_columns(2)
             .spacing([18.0, 10.0])
             .show(ui, |ui| {
+                ui.label("Quality preset");
+                let previous_preset = self.form.preset;
+                egui::ComboBox::from_id_salt("quality_preset")
+                    .selected_text(preset_label(self.form.preset))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.form.preset,
+                            QualityPreset::Balanced,
+                            "Balanced",
+                        );
+                        ui.selectable_value(
+                            &mut self.form.preset,
+                            QualityPreset::CleanSpeech,
+                            "Clean speech",
+                        );
+                        ui.selectable_value(
+                            &mut self.form.preset,
+                            QualityPreset::Singing,
+                            "Singing",
+                        );
+                        ui.selectable_value(
+                            &mut self.form.preset,
+                            QualityPreset::StrongIdentity,
+                            "Strong identity",
+                        );
+                    });
+                if self.form.preset != previous_preset {
+                    self.form.preset.apply(&mut self.form.config);
+                }
+                ui.end_row();
+
                 ui.label("Compute device");
                 egui::ComboBox::from_id_salt("compute_device")
                     .selected_text(device_label(self.form.config.device))
@@ -241,6 +293,30 @@ impl InferenceApp {
                 );
                 ui.end_row();
 
+                ui.label("Consonant protect")
+                    .on_hover_text("Lower values preserve more original unvoiced consonants; 0.5 disables protection.");
+                ui.add(
+                    egui::Slider::new(&mut self.form.config.protect_rate, 0.0..=0.5)
+                        .fixed_decimals(2),
+                );
+                ui.end_row();
+
+                ui.label("Generator noise")
+                    .on_hover_text("Lower values are steadier; higher values add variation and texture.");
+                ui.add(
+                    egui::Slider::new(&mut self.form.config.noise_scale, 0.0..=1.5)
+                        .fixed_decimals(2),
+                );
+                ui.end_row();
+
+                ui.label("Generated volume share")
+                    .on_hover_text("0 follows the input RMS envelope; 1 keeps the generated envelope.");
+                ui.add(
+                    egui::Slider::new(&mut self.form.config.rms_mix_rate, 0.0..=1.0)
+                        .fixed_decimals(2),
+                );
+                ui.end_row();
+
                 ui.label("Speaker ID");
                 ui.add(egui::DragValue::new(&mut self.form.config.speaker_id).range(0..=255));
                 ui.end_row();
@@ -254,6 +330,75 @@ impl InferenceApp {
                     egui::Slider::new(&mut self.form.config.crossfade_ms, 0..=250).suffix(" ms"),
                 );
                 ui.end_row();
+            });
+
+        egui::CollapsingHeader::new("Advanced quality controls")
+            .id_salt("advanced_quality_controls")
+            .show(ui, |ui| {
+                egui::Grid::new("advanced_inference_settings")
+                    .num_columns(2)
+                    .spacing([18.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Index neighbors (K)");
+                        ui.add(
+                            egui::DragValue::new(&mut self.form.config.retrieval_neighbors)
+                                .range(1..=32),
+                        );
+                        ui.end_row();
+
+                        ui.label("Index lists (nprobe)");
+                        ui.add(
+                            egui::DragValue::new(&mut self.form.config.retrieval_nprobe)
+                                .range(1..=64),
+                        );
+                        ui.end_row();
+
+                        ui.label("F0 minimum");
+                        ui.add(
+                            egui::Slider::new(&mut self.form.config.f0_min_hz, 40.0..=300.0)
+                                .suffix(" Hz")
+                                .fixed_decimals(0),
+                        );
+                        ui.end_row();
+
+                        ui.label("F0 maximum");
+                        ui.add(
+                            egui::Slider::new(&mut self.form.config.f0_max_hz, 300.0..=1_600.0)
+                                .suffix(" Hz")
+                                .fixed_decimals(0),
+                        );
+                        ui.end_row();
+
+                        ui.label("YIN threshold");
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.form.config.f0_yin_threshold,
+                                0.05..=0.40,
+                            )
+                            .fixed_decimals(2),
+                        );
+                        ui.end_row();
+
+                        ui.label("F0 median radius");
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.form.config.f0_filter_radius,
+                                0..=7,
+                            ),
+                        );
+                        ui.end_row();
+
+                        ui.label("Output gain");
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.form.config.output_gain_db,
+                                -24.0..=12.0,
+                            )
+                            .suffix(" dB")
+                            .fixed_decimals(1),
+                        );
+                        ui.end_row();
+                    });
             });
     }
 
@@ -442,5 +587,14 @@ fn device_label(device: ComputeDevice) -> String {
         ComputeDevice::Cpu => "CPU".to_owned(),
         ComputeDevice::Cuda(index) => format!("CUDA {index}"),
         ComputeDevice::Metal(index) => format!("Metal {index}"),
+    }
+}
+
+fn preset_label(preset: QualityPreset) -> &'static str {
+    match preset {
+        QualityPreset::Balanced => "Balanced",
+        QualityPreset::CleanSpeech => "Clean speech",
+        QualityPreset::Singing => "Singing",
+        QualityPreset::StrongIdentity => "Strong identity",
     }
 }

@@ -120,6 +120,8 @@ pub struct GeneratorInput<'a> {
     pub pitch: Option<PitchTrack<'a>>,
     /// Zero-based speaker embedding index.
     pub speaker_id: usize,
+    /// Standard deviation multiplier used to sample the generator latent.
+    pub noise_scale: f32,
 }
 
 impl GeneratorInput<'_> {
@@ -182,6 +184,10 @@ impl GeneratorInput<'_> {
             });
         }
 
+        if !self.noise_scale.is_finite() || !(0.0..=1.5).contains(&self.noise_scale) {
+            return Err(InputError::NoiseScaleOutOfRange);
+        }
+
         Ok(())
     }
 }
@@ -238,6 +244,9 @@ pub enum InputError {
         /// Number of available speaker embeddings.
         speaker_count: usize,
     },
+    /// The generator latent sampling scale is outside the supported range.
+    #[error("noise scale must be finite and between 0.0 and 1.5")]
+    NoiseScaleOutOfRange,
 }
 
 /// A backend capable of executing an initialized RVC generator.
@@ -389,6 +398,7 @@ mod tests {
                 continuous_hz: &continuous_hz,
             }),
             speaker_id: 0,
+            noise_scale: 0.5,
         };
 
         assert_eq!(input.validate(v2_f0_spec()), Ok(()));
@@ -410,6 +420,7 @@ mod tests {
                 continuous_hz: &continuous_hz,
             }),
             speaker_id: 0,
+            noise_scale: 0.5,
         };
 
         assert_eq!(
@@ -432,8 +443,34 @@ mod tests {
             },
             pitch: None,
             speaker_id: 0,
+            noise_scale: 0.5,
         };
 
         assert_eq!(input.validate(v2_f0_spec()), Err(InputError::MissingPitch));
+    }
+
+    #[test]
+    fn rejects_invalid_noise_scale() {
+        let values = vec![0.0; 768];
+        let coarse = [1];
+        let continuous_hz = [110.0];
+        let input = GeneratorInput {
+            features: FeatureMatrix {
+                values: &values,
+                frames: 1,
+                dimensions: 768,
+            },
+            pitch: Some(PitchTrack {
+                coarse: &coarse,
+                continuous_hz: &continuous_hz,
+            }),
+            speaker_id: 0,
+            noise_scale: f32::NAN,
+        };
+
+        assert_eq!(
+            input.validate(v2_f0_spec()),
+            Err(InputError::NoiseScaleOutOfRange)
+        );
     }
 }

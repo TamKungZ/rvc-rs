@@ -51,7 +51,8 @@ recorded as parity fixtures before each Candle block is accepted.
 The native v2 model path is implemented, but offline numerical parity remains
 the release gate. Real-checkpoint testing found and corrected HuBERT
 normalization, feature upsampling, source generation, resampling, and F0
-failures in 0.4.2-rc.1. Streaming work stays blocked until the corrected
+failures in 0.4.2-rc.1. Flexible quality controls were added in 0.4.2-rc.2.
+Streaming work stays blocked until the corrected
 offline path passes reference and listening tests.
 
 ## Adapter policy

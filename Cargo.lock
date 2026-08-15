@@ -3683,7 +3683,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rvc-rs-audio"
-version = "0.4.2-rc.1"
+version = "0.4.2-rc.2"
 dependencies = [
  "cpal",
  "hound",
@@ -3692,7 +3692,7 @@ dependencies = [
 
 [[package]]
 name = "rvc-rs-candle"
-version = "0.4.2-rc.1"
+version = "0.4.2-rc.2"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "rvc-rs-cli"
-version = "0.4.2-rc.1"
+version = "0.4.2-rc.2"
 dependencies = [
  "rvc-rs-core",
  "rvc-rs-engine",
@@ -3711,7 +3711,7 @@ dependencies = [
 
 [[package]]
 name = "rvc-rs-core"
-version = "0.4.2-rc.1"
+version = "0.4.2-rc.2"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -3719,14 +3719,14 @@ dependencies = [
 
 [[package]]
 name = "rvc-rs-dsp"
-version = "0.4.2-rc.1"
+version = "0.4.2-rc.2"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "rvc-rs-engine"
-version = "0.4.2-rc.1"
+version = "0.4.2-rc.2"
 dependencies = [
  "candle-core",
  "rvc-rs-audio",
@@ -3740,7 +3740,7 @@ dependencies = [
 
 [[package]]
 name = "rvc-rs-inference"
-version = "0.4.2-rc.1"
+version = "0.4.2-rc.2"
 dependencies = [
  "eframe",
  "rfd",

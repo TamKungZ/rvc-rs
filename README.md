@@ -19,7 +19,7 @@ microphone -> rolling 16 kHz context -> ContentVec + F0
 The workspace does not depend on `vc-rs`, `vc-core`, ONNX Runtime, Python,
 PyTorch, libtorch, or native FAISS.
 
-## Current native checkpoint (0.4.2-rc.1)
+## Current native checkpoint (0.4.2-rc.2)
 
 Implemented; release-candidate verification is described below:
 
@@ -45,9 +45,12 @@ Implemented; release-candidate verification is described below:
 - mandatory managed `hubert_base.pt`: downloaded once into the per-user cache,
   pinned by immutable revision, and verified by size plus SHA-256 before use;
 - no ContentVec/HuBERT file argument or picker in the CLI and GUI.
+- four quality presets plus independent retrieval, protection, F0, latent-noise,
+  RMS-envelope, and output-gain controls in both the engine and front ends.
 
 The 0.4.2 release candidate corrects failures found with a real v2/40k/F0
-checkpoint and singing input. End-to-end PyTorch waveform parity is not yet
+checkpoint and singing input. RC.2 adds flexible quality tuning, but native YIN
+still does not claim RMVPE parity. End-to-end PyTorch waveform parity is not yet
 claimed. Real-time CPAL streaming, native RMVPE, v1 ContentVec, and non-F0
 model support remain in progress.
 
@@ -89,7 +92,37 @@ cargo run --release -p rvc-rs-cli -- convert \
 ```
 
 Use `-` instead of `voice.index` to disable retrieval. The last two optional
-arguments are pitch shift in semitones and device. The current file decoder is
+arguments are pitch shift in semitones and device. The command remains
+backward-compatible; it now uses the `balanced` preset unless another preset is
+selected.
+
+For singing material, compare presets first:
+
+```bash
+cargo run --release -p rvc-rs-cli -- convert \
+  voice.pth voice.index input.wav output-singing.wav 0 auto \
+  --preset singing
+
+cargo run --release -p rvc-rs-cli -- convert \
+  voice.pth voice.index input.wav output-clean.wav 0 auto \
+  --preset clean
+```
+
+Every preset can be overridden. This example lowers index artifacts, tightens
+the pitch range, reduces latent variation, and follows the input loudness more
+closely:
+
+```bash
+cargo run --release -p rvc-rs-cli -- convert \
+  voice.pth voice.index input.wav output-tuned.wav 0 auto \
+  --preset balanced --index-rate 0.45 --protect 0.20 \
+  --noise-scale 0.35 --f0-min 65 --f0-max 700 \
+  --f0-threshold 0.13 --f0-filter-radius 4 --rms-mix 0.15
+```
+
+The presets are `balanced`, `clean`, `singing`, and `identity`. Run
+`rvc-rs --help` for all ranges, including index K/nprobe, speaker ID, and output
+gain. A `-` index path always forces retrieval off. The current file decoder is
 deliberately WAV-only to avoid pulling a full codec framework into the core
 build.
 
