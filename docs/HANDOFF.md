@@ -1,42 +1,25 @@
-# Handoff for a new ChatGPT/Codex thread
+# Handoff
 
-Attach the ZIP and use this prompt:
+## Non-negotiable direction
 
-```text
-Continue the rvc-rs project in this ZIP.
+Build direct `.pth` + `.index` real-time RVC in native Rust/Candle. Python RVC
+and MMVCServerSIO are behavioral references. Do not replace missing native work
+with ONNX or a `vc-rs` dependency.
 
-Context:
-- pthrs 0.2.0 is published at https://github.com/TamKungZ/pthrs
-- pthrs reads exported RVC .pth tensors and FAISS IndexIVFFlat .index files
-- this project must perform inference without Python/PyTorch at runtime
-- Candle is the first direct-checkpoint tensor backend
-- rvc-rs-inference is the egui desktop app
-- GUI and CLI must share rvc-rs-engine
-- CPU correctness comes before CUDA, Metal, and real-time streaming
+## Completed in 0.3.0
 
-First milestone:
-fixed generator inputs + v2/40k/F0 .pth
--> pthrs weight adapter
--> Candle RVC generator
--> deterministic mono waveform matching a PyTorch reference
+- removed `vc-rs`, `vc-core`, and ONNX Runtime from the workspace graph;
+- direct `.pth` metadata validation and eager state-dictionary transfer;
+- native loaded IVF-Flat retrieval with reusable workspace;
+- MMVC-compatible streaming geometry and rolling buffers;
+- normalized-correlation SOLA plus crossfade;
+- `prepare-native` CLI gate.
 
-Read AGENTS.md, README.md, and every file under docs/ before changing code.
-Start with Phase 1 and Phase 2 in docs/ROADMAP.md.
-Do not start microphone streaming and do not claim inference works until the
-waveform parity test passes.
-If pthrs needs changes, keep them format/retrieval-generic and send them
-separately from rvc-rs.
-```
+## Immediate next task
 
-## Current state
+Implement v2/40k/F0 generator parity in `rvc-rs-candle`, starting with exact
+weight binding and recorded Python inputs/outputs. The target Python class is
+`SynthesizerTrnMs768NSFsid`; port only inference-required blocks.
 
-- Seven-package workspace and dependency boundaries are established.
-- Core input validation and starter DSP functions have unit tests.
-- Candle CPU device/tensor smoke testing exists with optional CUDA and Metal.
-- Shared engine configuration, path validation, and lifecycle exist.
-- CLI and egui application use the shared engine.
-- `CandleGenerator` intentionally returns `ModelNotImplemented`.
-- No checkpoint API was guessed; inspect the published `pthrs 0.2.0` API first.
-- No model forward pass, content encoder, F0 extractor, audio decoder, or stream
-  exists yet.
-
+After generator parity: native ContentVec layer 12, RMVPE, the preallocated
+worker, and CPAL device streams. See `ROADMAP.md`.

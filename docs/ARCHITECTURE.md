@@ -1,55 +1,60 @@
 # Architecture
 
-## Offline data flow
+## Production boundary
+
+The default workspace is standalone. `rvc-rs-candle` consumes `.pth` and
+`.index` data through `pthrs`; neither ONNX Runtime nor `vc-rs` participates in
+model loading, retrieval, or inference.
 
 ```text
-.pth -> pthrs -> named tensors -> Candle weight binding -> RVC generator
-.index -> pthrs -> retrieval search --------------------------^
-audio -> resample -> content encoder -> F0 -> feature blend ---|
-RVC generator -> boundary handling -> WAV output
+.pth -> pthrs validation -> named f32 tensors -> Candle device
+.index -> pthrs IVF-Flat -> resident vectors + reusable search workspace
 ```
 
-The first milestone bypasses audio decoding, content encoding, F0 extraction,
-and retrieval by loading fixed generator-ready tensors. This isolates model
-correctness from the rest of the pipeline.
+Checkpoint and index loading are eager startup operations. They may allocate
+and perform file I/O. The real-time loop may not.
+
+## Target streaming flow
+
+```text
+input callback -> bounded SPSC queue -> inference worker
+inference worker:
+  rolling audio -> 16 kHz -> ContentVec + RMVPE
+  features -> index blend -> Candle RVC generator
+  waveform -> SOLA/crossfade -> output queue
+output callback <- bounded SPSC queue
+```
+
+The callback moves fixed-size sample blocks only. Model execution, resampling,
+retrieval, logging, file I/O, and allocation stay on the inference worker.
+
+## MMVCServerSIO compatibility points
+
+- retain audio, pitch, and feature history across calls;
+- calculate the 100 Hz feature grid from output-rate context;
+- include block, crossfade, 12 ms SOLA search, and extra conversion history;
+- round generator context up to a 128-sample boundary;
+- blend retrieved features before 2x temporal interpolation;
+- align consecutive outputs by normalized correlation and crossfade the chosen
+  boundary;
+- return exactly one device block per cycle.
+
+These are behavioral requirements. Python tensor layouts and padding rules are
+recorded as parity fixtures before each Candle block is accepted.
 
 ## Model implementation order
 
-1. exact checkpoint-to-Candle tensor adapter;
-2. speaker and pitch embeddings;
-3. content/text encoder;
-4. residual coupling flow;
-5. NSF source path;
-6. HiFi-GAN decoder and upsampling blocks;
-7. top-level synthesizer forward pass.
+1. bind every checkpoint tensor by exact state-dictionary name;
+2. speaker/pitch embeddings and content encoder;
+3. residual coupling flow;
+4. NSF source path;
+5. HiFi-GAN decoder;
+6. v2/40k/F0 top-level inference;
+7. native ContentVec and RMVPE;
+8. streaming worker and CPAL devices.
 
-Every block receives its own fixed inputs and recorded PyTorch output. Do not
-wait for final audio to discover a low-level padding or layout mismatch.
+## Adapter policy
 
-## Planned streaming design
-
-```text
-high-priority input callback -> bounded SPSC input buffer
-bounded input -> inference worker -> bounded SPSC output buffer
-bounded output -> high-priority output callback
-```
-
-Callbacks only convert sample formats and move bounded slices. They do not:
-
-- allocate;
-- log;
-- read files;
-- acquire a contended mutex;
-- resample;
-- run neural inference.
-
-Model loading, index loading, device initialization, buffer reservation, and FFT
-planning happen before audio streams start.
-
-## Backend policy
-
-Candle is the first direct-checkpoint backend. Do not generalize over several
-tensor frameworks before the first generator works. `rvc-rs-core` remains
-backend-independent so ONNX Runtime, Burn, or another implementation can be
-added later without changing front ends.
-
+Alternative runtimes belong outside the core dependency graph. The detached
+`crates/rvc-rs-onnx` prototype may later be renamed and published as a `vc-rs`
+adapter. Native types must not depend on it.

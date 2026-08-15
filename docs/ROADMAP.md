@@ -1,94 +1,70 @@
-# Implementation roadmap
+# Native `.pth` / `.index` roadmap
 
-## Phase 0 — foundation
+The completion target is MMVCServerSIO-compatible real-time RVC behavior with
+no Python, PyTorch, libtorch, FAISS, vc-rs, vc-core, or ONNX Runtime dependency
+in the default build.
 
-- [x] Umbrella Cargo workspace
-- [x] Backend-independent model and input validation
-- [x] Candle CPU/CUDA/Metal device selection
-- [x] Safe decoded-`f32` to Candle tensor boundary
-- [x] Allocation-free starter DSP primitives
-- [x] Shared engine settings, jobs, lifecycle, and validation
-- [x] Headless CLI
-- [x] egui desktop application with persisted form state
-- [x] CI for formatting, Clippy, tests, and docs
-- [x] Explicit gate preventing fake conversion output
+## 1. Model data — active
 
-## Phase 1 — trusted fixtures
+- [x] Safe ZIP PyTorch checkpoint reader
+- [x] RVC metadata/config extraction
+- [x] Checkpoint consistency validation
+- [x] Eager state-dictionary transfer to Candle
+- [x] Pure-Rust FAISS IVF-Flat reader
+- [x] In-memory, preallocated index search and blending
+- [ ] Complete required/unexpected weight manifest for every supported variant
+- [ ] Real v2/40k/F0 checkpoint preparation fixture
 
-- [ ] Select one local v2/40k/F0 exported checkpoint
-- [ ] Record its hash and non-secret provenance
-- [ ] Create deterministic phone, length, pitch, pitchf, and speaker tensors
-- [ ] Record PyTorch intermediate outputs and waveform
-- [ ] Store shapes, dtypes, hashes, revisions, seeds, and tolerances in a manifest
-- [ ] Keep model and array bytes outside Git
+Exit: a real checkpoint and index load with every generator weight accounted
+for exactly once.
 
-Exit condition: the reference bundle is independently reproducible.
+## 2. Generator parity — next critical path
 
-## Phase 2 — weight adapter
-
-- [ ] Inspect the exact public `pthrs 0.2.0` API
-- [ ] Derive `ModelSpec` from checkpoint config
-- [ ] Load one named tensor into Candle on CPU
-- [ ] Preserve and verify name, original dtype, shape, and element count
-- [ ] Bind every required generator weight exactly once
-- [ ] Report complete missing and unexpected weight sets
-- [ ] Add checkpoint compatibility tests using existing pthrs fixtures
-
-Exit condition: all v2/40k/F0 weights bind without silent transformations.
-
-## Phase 3 — generator parity
-
-- [ ] Embeddings
-- [ ] Content encoder
+- [ ] Speaker and pitch embeddings
+- [ ] Text/content encoder
 - [ ] Residual coupling flow
-- [ ] NSF source path
-- [ ] HiFi-GAN decoder and upsampling blocks
-- [ ] Top-level synthesizer
-- [ ] Intermediate output comparisons
-- [ ] Final waveform comparison
-- [ ] NaN/infinity checks
+- [ ] NSF sine source
+- [ ] HiFi-GAN upsampling decoder and residual blocks
+- [ ] v2/40k/F0 top-level forward
+- [ ] Intermediate tensor comparisons against Python
+- [ ] Final waveform tolerance and finite-value checks
 
-Exit condition: deterministic CPU `f32` output matches the reference tolerance.
+Exit: generator-ready tensors produce the same waveform as the Python
+`SynthesizerTrnMs768NSFsid.infer` reference.
 
-## Phase 4 — offline conversion
+## 3. Native front end
 
-- [ ] Audio decode and WAV encode
-- [ ] ContentVec/HuBERT inference
-- [ ] F0 extraction
-- [ ] `pthrs` retrieval search and feature blending
-- [ ] Resampling and normalization
-- [ ] Chunk boundary handling
-- [ ] CLI file conversion
-- [ ] GUI progress, cancellation, and output reveal
-- [ ] Timing and peak-memory report
+- [ ] ContentVec/HuBERT architecture and checkpoint adapter
+- [ ] v2 layer-12 features
+- [ ] v1 layer-9 + final projection
+- [ ] RMVPE architecture and checkpoint adapter
+- [ ] F0 quantization, transpose, unvoiced interpolation, and protect mask
+- [x] Native `.index` retrieval blend
+- [ ] Full raw-audio-to-generator-input parity
 
-Exit condition: WAV-to-WAV conversion works without Python/PyTorch at runtime.
+## 4. Real-time execution
 
-## Phase 5 — compatibility
-
-- [ ] v1 / 40 kHz / F0
-- [ ] v1 / 48 kHz / F0
-- [ ] v2 / 32 kHz / F0
-- [ ] non-F0 exported inference model
-- [ ] compatibility matrix shared with pthrs documentation
-
-## Phase 6 — real-time
-
-- [ ] CPAL device discovery and stable selection
-- [ ] Fixed-size workspaces and bounded SPSC buffers
+- [x] MMVC-compatible context/feature geometry and 128-sample alignment
+- [x] Fixed rolling history buffers
+- [x] Allocation-free SOLA search and crossfade
+- [ ] Preallocated pipeline workspaces
+- [ ] Bounded SPSC input/output queues
 - [ ] Dedicated inference worker
-- [ ] Back-pressure, underrun, and overrun policies
-- [ ] Overlap/crossfade artifact tests
-- [ ] Input/output clock-drift compensation
-- [ ] Latency breakdown in the GUI
-- [ ] Device disconnect recovery
+- [ ] CPAL input/output streams
+- [ ] Back-pressure, underrun, overrun, and device-loss policy
+- [ ] Measured latency budget and sustained soak test
 
-## Phase 7 — optimization and packaging
+## 5. Compatibility
 
-- [ ] Release CPU baseline and allocation audit
-- [ ] CUDA parity and profiling
-- [ ] Metal parity and profiling
-- [ ] Optional lower precision
-- [ ] Windows, Linux, and macOS packaging
-- [ ] Model compatibility and performance regression suite
+- [ ] v1/v2
+- [ ] 32/40/48 kHz
+- [ ] F0 and non-F0
+- [ ] Multi-speaker checkpoints
+- [ ] Common weight-norm/export variants
+- [ ] IVF-Flat index variants encountered in public RVC models
 
+## Optional adapters
+
+The previous `vc-rs`/ONNX code is excluded from the workspace. It may become an
+explicit adapter after the native pipeline stands on its own; it cannot be the
+default implementation or define the core interfaces.
