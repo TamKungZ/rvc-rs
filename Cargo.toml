@@ -9,10 +9,17 @@ members = [
     "crates/rvc-rs-engine",
 ]
 resolver = "2"
-exclude = ["crates/rvc-rs-onnx"]
+default-members = [
+    "apps/rvc-rs-cli",
+    "crates/rvc-rs-audio",
+    "crates/rvc-rs-candle",
+    "crates/rvc-rs-core",
+    "crates/rvc-rs-dsp",
+    "crates/rvc-rs-engine",
+]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["TamKungZ_ <dev@tamkungz.me>"]
 repository = "https://github.com/TamKungZ/rvc-rs"
@@ -35,7 +42,6 @@ rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 hound = "3.5.1"
-symphonia = { version = "0.5.4", features = ["all"] }
 
 rvc-rs-audio = { path = "crates/rvc-rs-audio" }
 rvc-rs-candle = { path = "crates/rvc-rs-candle" }
