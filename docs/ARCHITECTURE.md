@@ -14,6 +14,10 @@ model loading, retrieval, or inference.
 Checkpoint and index loading are eager startup operations. They may allocate
 and perform file I/O. The real-time loop may not.
 
+The shared HuBERT/ContentVec checkpoint is a mandatory engine-owned asset. It
+is resolved from the per-user cache, downloaded once when absent, and verified
+against pinned size and SHA-256 metadata. Front ends never supply its path.
+
 ## Target streaming flow
 
 ```text

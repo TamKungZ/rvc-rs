@@ -19,7 +19,7 @@ microphone -> rolling 16 kHz context -> ContentVec + F0
 The workspace does not depend on `vc-rs`, `vc-core`, ONNX Runtime, Python,
 PyTorch, libtorch, or native FAISS.
 
-## Current native checkpoint (0.4.0)
+## Current native checkpoint (0.4.1)
 
 Implemented and tested:
 
@@ -41,6 +41,9 @@ Implemented and tested:
 - WAV decode, resample, conversion, and float-WAV output;
 - tested conversion with the TITAN 32k `.pth` and matching `.index` from the
   `pthrs` compatibility matrix.
+- mandatory managed `hubert_base.pt`: downloaded once into the per-user cache,
+  pinned by immutable revision, and verified by size plus SHA-256 before use;
+- no ContentVec/HuBERT file argument or picker in the CLI and GUI.
 
 Real-time CPAL device streaming, RMVPE parity, v1 ContentVec, and non-F0 model
 support remain in progress.
@@ -72,18 +75,30 @@ unavailable devices.
 ## Convert a WAV now
 
 RVC requires a content encoder in addition to the target voice checkpoint.
-Supply the standard `hubert_base.pt`; the F0 extractor is built in and does not
-need an RMVPE/ONNX file.
+`rvc-rs` manages the required RVC `hubert_base.pt` internally: the first
+conversion downloads and verifies it, and every later conversion reuses the
+same per-user cached asset. It is mandatory and cannot be selected or disabled.
+The F0 extractor is built in and does not need an RMVPE/ONNX file.
 
 ```bash
 cargo run --release -p rvc-rs-cli -- convert \
-  voice.pth hubert_base.pt voice.index input.wav output.wav 0 auto
+  voice.pth voice.index input.wav output.wav 0 auto
 ```
 
 Use `-` instead of `voice.index` to disable retrieval. The last two optional
 arguments are pitch shift in semitones and device. The current file decoder is
 deliberately WAV-only to avoid pulling a full codec framework into the core
 build.
+
+The managed model is stored at the OS cache location:
+
+- Linux: `$XDG_CACHE_HOME/rvc-rs/models/hubert_base.pt`, or
+  `$HOME/.cache/rvc-rs/models/hubert_base.pt`;
+- macOS: `$HOME/Library/Caches/rvc-rs/models/hubert_base.pt`;
+- Windows: `%LOCALAPPDATA%\rvc-rs\models\hubert_base.pt`.
+
+See [Managed model assets](docs/MODEL_ASSETS.md) for pinned provenance and
+integrity metadata.
 
 ## Workspace
 
@@ -107,13 +122,14 @@ cargo test --workspace --all-targets
 ```
 
 Waveform parity work requires recorded Python reference tensors. Functional
-end-to-end tests require a user-supplied RVC checkpoint and ContentVec weights.
+end-to-end tests require a user-supplied RVC checkpoint; ContentVec uses the
+same mandatory managed HuBERT asset as normal inference.
 
 ## References
 
 - [RVC WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
 - [MMVCServerSIO / voice-changer](https://github.com/w-okada/voice-changer)
-- [vc-rs](https://github.com/shirohata/vc-rs) — optional adapter
+- [vc-rs](https://github.com/shirohata/vc-rs) — optional adapter/reference only
 
 ## License
 

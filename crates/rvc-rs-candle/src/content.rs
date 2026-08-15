@@ -35,7 +35,8 @@
 //! # Weight provenance
 //!
 //! The canonical v2 checkpoint is `hubert_base.pt` from
-//! `https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/hubert_base.pt`.
+//! `lj1995/VoiceConversionWebUI` revision
+//! `1c75048c96f23f99da4b12909b532b5983290d7d`.
 //! This is a **fairseq** state-dict, not a HuggingFace `transformers`
 //! HuBERT -- the key prefixes differ:
 //!

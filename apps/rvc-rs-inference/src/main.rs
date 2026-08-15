@@ -35,8 +35,6 @@ struct SavedForm {
     mode: ConversionMode,
     config: EngineConfig,
     checkpoint: String,
-    contentvec: String,
-    rmvpe: String,
     index: String,
     input_audio: String,
     output_audio: String,
@@ -83,9 +81,6 @@ impl InferenceApp {
     fn model_files(&self) -> ModelFiles {
         ModelFiles {
             checkpoint: PathBuf::from(&self.form.checkpoint),
-            contentvec: (!self.form.contentvec.is_empty())
-                .then(|| PathBuf::from(&self.form.contentvec)),
-            rmvpe: (!self.form.rmvpe.is_empty()).then(|| PathBuf::from(&self.form.rmvpe)),
             index: (!self.form.index.is_empty()).then(|| PathBuf::from(&self.form.index)),
         }
     }
@@ -182,7 +177,6 @@ impl InferenceApp {
     fn model_section(&mut self, ui: &mut egui::Ui) {
         ui.heading("Voice model");
         path_picker(ui, "RVC model", &mut self.form.checkpoint, &["pth"], false);
-        path_picker(ui, "ContentVec", &mut self.form.contentvec, &["pt"], false);
         path_picker(
             ui,
             "Retrieval index",
@@ -193,7 +187,8 @@ impl InferenceApp {
         ui.label(
             egui::RichText::new(concat!(
                 "The production path loads .pth tensors directly into Candle and the ",
-                "optional IVF-Flat .index into a preallocated native search workspace."
+                "optional IVF-Flat .index into a preallocated native search workspace. ",
+                "The mandatory HuBERT model is downloaded, verified, and managed automatically."
             ))
             .small()
             .weak(),
@@ -329,6 +324,15 @@ impl InferenceApp {
                 let job = self.offline_job();
                 match self.engine.begin_offline(&job) {
                     Ok(task) => {
+                        if !rvc_rs_engine::hubert_is_cached() {
+                            self.push_message(
+                                concat!(
+                                    "Downloading and verifying the mandatory managed HuBERT model ",
+                                    "once (189.5 MB)…"
+                                )
+                                .to_owned(),
+                            );
+                        }
                         let (sender, receiver) = mpsc::channel();
                         std::thread::spawn(move || {
                             let result = task.run().map_err(|error| error.to_string());

@@ -18,7 +18,9 @@ rvc-rs-audio.workspace = true
 rvc-rs-candle.workspace = true
 rvc-rs-core.workspace = true
 serde.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+ureq.workspace = true
 
 [lib]
 path = "src/lib.rs"

@@ -41,6 +41,7 @@ Exit: generator-ready tensors produce the same waveform as the Python
 - [x] Lightweight autocorrelation F0, transpose, and quantization
 - [x] Native `.index` retrieval blend
 - [x] Functional WAV-to-generator-input pipeline
+- [x] Mandatory managed HuBERT download, cache, and integrity verification
 - [ ] RMVPE/protect and Python numerical parity
 
 ## 4. Real-time execution

@@ -6,7 +6,7 @@ Build direct `.pth` + `.index` real-time RVC in native Rust/Candle. Python RVC
 and MMVCServerSIO are behavioral references. Do not replace missing native work
 with ONNX or a `vc-rs` dependency.
 
-## Completed in 0.4.0
+## Completed through 0.4.1
 
 - removed `vc-rs`, `vc-core`, and ONNX Runtime from the workspace graph;
 - direct `.pth` metadata validation and eager state-dictionary transfer;
@@ -19,6 +19,9 @@ with ONNX or a `vc-rs` dependency.
 - dependency-light DSP F0 extraction;
 - working WAV conversion with optional `.index` retrieval;
 - functional test against TITAN 32k and `hubert_base.pt`.
+- removed user-supplied HuBERT paths from CLI, GUI, and engine model identity;
+- mandatory HuBERT auto-download into the OS cache with immutable revision,
+  exact-size, and SHA-256 enforcement.
 
 ## Immediate next task
 

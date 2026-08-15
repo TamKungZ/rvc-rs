@@ -3,6 +3,10 @@
 
 //! Shared orchestration state for the GUI, CLI, and future streaming worker.
 
+mod assets;
+
+pub use assets::{hubert_cache_path, hubert_is_cached, hubert_is_ready, AssetError};
+
 use candle_core::IndexOp;
 use rvc_rs_audio::{decode_audio_mono, write_wav_mono};
 use rvc_rs_candle::{
@@ -78,10 +82,6 @@ impl EngineConfig {
 pub struct ModelFiles {
     /// Native RVC inference checkpoint (`.pth`).
     pub checkpoint: PathBuf,
-    /// Reserved path for the native ContentVec checkpoint.
-    pub contentvec: Option<PathBuf>,
-    /// Reserved path for the native RMVPE checkpoint.
-    pub rmvpe: Option<PathBuf>,
     /// Optional FAISS IVF-Flat index.
     pub index: Option<PathBuf>,
 }
@@ -90,14 +90,6 @@ impl ModelFiles {
     /// Validates extensions and local file presence.
     pub fn validate(&self) -> Result<(), EngineError> {
         validate_file(&self.checkpoint, "pth", "voice model")?;
-        if let Some(contentvec) = &self.contentvec {
-            if !contentvec.is_file() {
-                return Err(EngineError::MissingFile {
-                    field: "ContentVec model",
-                    path: contentvec.clone(),
-                });
-            }
-        }
         if let Some(index) = &self.index {
             validate_file(index, "index", "retrieval index")?;
         }
@@ -186,17 +178,13 @@ impl OfflineTask {
         let samples_16k = linear_resample(&decoded.samples, decoded.sample_rate, 16_000);
         let mut generator = CandleGenerator::load(&self.model.checkpoint, self.config.device)?;
         let spec = generator.spec();
-        let contentvec_path = self
-            .model
-            .contentvec
-            .as_ref()
-            .ok_or(EngineError::MissingPath("ContentVec hubert_base.pt"))?;
+        let contentvec_path = assets::ensure_hubert()?;
         if spec.version != ModelVersion::V2 {
             return Err(EngineError::FeatureUnavailable(
                 "the current native ContentVec path supports RVC v2 checkpoints only",
             ));
         }
-        let encoder = ContentEncoder::load(contentvec_path, generator.device(), RvcVersion::V2)?;
+        let encoder = ContentEncoder::load(&contentvec_path, generator.device(), RvcVersion::V2)?;
         let inference_started = Instant::now();
         let encoded = encoder.encode(&samples_16k)?;
         let (_, content_frames, dimensions) = encoded.dims3()?;
@@ -349,6 +337,7 @@ fn pitch_to_coarse(hz: f32) -> i64 {
 #[derive(Debug)]
 pub struct PreparedNativeModel {
     generator: CandleGenerator,
+    content_encoder: ContentEncoder,
     retrieval: Option<RetrievalIndex>,
 }
 
@@ -356,6 +345,11 @@ impl PreparedNativeModel {
     /// Loaded RVC generator checkpoint and its Candle tensors.
     pub const fn generator(&self) -> &CandleGenerator {
         &self.generator
+    }
+
+    /// Mandatory managed ContentVec/HuBERT encoder.
+    pub const fn content_encoder(&self) -> &ContentEncoder {
+        &self.content_encoder
     }
 
     /// Optional in-memory FAISS retrieval index.
@@ -480,6 +474,14 @@ impl Engine {
         let result = (|| {
             let generator = CandleGenerator::load(&model.checkpoint, self.config.device)?;
             let spec = generator.spec();
+            if spec.version != ModelVersion::V2 {
+                return Err(EngineError::FeatureUnavailable(
+                    "the current managed ContentVec path supports RVC v2 checkpoints only",
+                ));
+            }
+            let hubert_path = assets::ensure_hubert()?;
+            let content_encoder =
+                ContentEncoder::load(&hubert_path, generator.device(), RvcVersion::V2)?;
             let retrieval = model
                 .index
                 .as_ref()
@@ -502,6 +504,7 @@ impl Engine {
             Ok((
                 PreparedNativeModel {
                     generator,
+                    content_encoder,
                     retrieval,
                 },
                 report,
@@ -533,9 +536,6 @@ impl Engine {
         self.config.validate()?;
         let model = self.model.as_ref().ok_or(EngineError::NoModel)?;
         model.validate()?;
-        if model.contentvec.is_none() {
-            return Err(EngineError::MissingPath("ContentVec hubert_base.pt"));
-        }
         job.validate()?;
         Ok(())
     }
@@ -642,6 +642,9 @@ pub enum EngineError {
     /// Audio decoding or WAV encoding failed.
     #[error(transparent)]
     Audio(#[from] rvc_rs_audio::AudioError),
+    /// A mandatory managed runtime model could not be resolved or verified.
+    #[error(transparent)]
+    Asset(#[from] AssetError),
     /// ContentVec loading or inference failed.
     #[error(transparent)]
     Content(#[from] rvc_rs_candle::ContentError),
@@ -675,8 +678,6 @@ mod tests {
         let mut engine = Engine::new();
         engine.set_model(ModelFiles {
             checkpoint: PathBuf::from("voice.pth"),
-            contentvec: None,
-            rmvpe: None,
             index: None,
         });
         assert_eq!(engine.state(), &EngineState::Configured);

@@ -42,8 +42,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut engine = Engine::new();
             engine.set_model(ModelFiles {
                 checkpoint: PathBuf::from(checkpoint),
-                contentvec: None,
-                rmvpe: None,
                 index,
             });
             engine.validate_offline(&OfflineJob {
@@ -60,6 +58,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let device = parse_device(arguments.next().as_deref().unwrap_or("auto"))?;
             reject_extra(arguments)?;
 
+            if !rvc_rs_engine::hubert_is_cached() {
+                eprintln!(
+                    "managed HuBERT is not cached; downloading and verifying it once (189.5 MB)..."
+                );
+            }
+
             let mut engine = Engine::new();
             engine.set_config(EngineConfig {
                 device,
@@ -68,8 +72,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             engine.set_model(ModelFiles {
                 checkpoint: PathBuf::from(model),
-                contentvec: None,
-                rmvpe: None,
                 index,
             });
             let report = engine.prepare_native()?;
@@ -89,7 +91,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("convert") => {
             let checkpoint = required(&mut arguments, "model.pth")?;
-            let contentvec = required(&mut arguments, "hubert_base.pt")?;
             let index = optional_path(required(&mut arguments, "model.index or -")?);
             let input_audio = required(&mut arguments, "input audio")?;
             let output_audio = required(&mut arguments, "output.wav")?;
@@ -102,6 +103,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let device = parse_device(arguments.next().as_deref().unwrap_or("auto"))?;
             reject_extra(arguments)?;
 
+            if !rvc_rs_engine::hubert_is_cached() {
+                eprintln!(
+                    "managed HuBERT is not cached; downloading and verifying it once (189.5 MB)..."
+                );
+            }
+
             let mut engine = Engine::new();
             engine.set_config(EngineConfig {
                 device,
@@ -111,8 +118,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             engine.set_model(ModelFiles {
                 checkpoint: PathBuf::from(checkpoint),
-                contentvec: Some(PathBuf::from(contentvec)),
-                rmvpe: None,
                 index,
             });
             let report = engine.start_offline(&OfflineJob {
@@ -130,13 +135,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("status") => {
             reject_extra(arguments)?;
-            println!("rvc-rs 0.4.0");
+            println!("rvc-rs 0.4.1");
             println!("checkpoint/index: pthrs 0.2.0");
             println!("tensor backend: Candle 0.11.0");
             println!("native checkpoint loader: .pth -> pthrs -> Candle tensors");
             println!("native retrieval: FAISS IVF-Flat .index via pthrs");
             println!("desktop app: egui/eframe 0.36.1");
             println!("offline v2 path: native ContentVec + DSP F0 + RVC generator");
+            println!(
+                "managed HuBERT: {}",
+                if rvc_rs_engine::hubert_is_cached() {
+                    "cached; integrity is verified before inference"
+                } else {
+                    "will download automatically on first conversion"
+                }
+            );
             Ok(())
         }
         Some("help") | Some("--help") | Some("-h") | None => {
@@ -203,7 +216,7 @@ fn print_usage() {
         "[auto|cpu|cuda:N|metal:N]"
     ));
     println!(concat!(
-        "  rvc-rs convert <model.pth> <hubert_base.pt> <model.index|-> ",
+        "  rvc-rs convert <model.pth> <model.index|-> ",
         "<input> <output.wav> [pitch-semitones] [auto|cpu|cuda:N|metal:N]"
     ));
     println!();
