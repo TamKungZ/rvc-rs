@@ -51,7 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 output_audio: PathBuf::from(output_audio),
             })?;
             println!("offline job paths and configuration are valid");
-            println!("native .pth/.index paths are valid; generator forward remains in progress");
+            println!("native .pth/.index paths are valid");
             Ok(())
         }
         Some("prepare-native") => {
@@ -87,15 +87,56 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
+        Some("convert") => {
+            let checkpoint = required(&mut arguments, "model.pth")?;
+            let contentvec = required(&mut arguments, "hubert_base.pt")?;
+            let index = optional_path(required(&mut arguments, "model.index or -")?);
+            let input_audio = required(&mut arguments, "input audio")?;
+            let output_audio = required(&mut arguments, "output.wav")?;
+            let pitch_shift = arguments
+                .next()
+                .as_deref()
+                .unwrap_or("0")
+                .parse::<i8>()
+                .map_err(|_| "pitch shift must be an integer semitone value")?;
+            let device = parse_device(arguments.next().as_deref().unwrap_or("auto"))?;
+            reject_extra(arguments)?;
+
+            let mut engine = Engine::new();
+            engine.set_config(EngineConfig {
+                device,
+                pitch_shift,
+                retrieval_rate: if index.is_some() { 0.75 } else { 0.0 },
+                ..EngineConfig::default()
+            })?;
+            engine.set_model(ModelFiles {
+                checkpoint: PathBuf::from(checkpoint),
+                contentvec: Some(PathBuf::from(contentvec)),
+                rmvpe: None,
+                index,
+            });
+            let report = engine.start_offline(&OfflineJob {
+                input_audio: PathBuf::from(input_audio),
+                output_audio: PathBuf::from(output_audio),
+            })?;
+            println!(
+                "converted {} samples at {} Hz in {:.2}s -> {}",
+                report.samples,
+                report.sample_rate,
+                report.elapsed.as_secs_f32(),
+                report.output_audio.display()
+            );
+            Ok(())
+        }
         Some("status") => {
             reject_extra(arguments)?;
-            println!("rvc-rs 0.3.0");
+            println!("rvc-rs 0.4.0");
             println!("checkpoint/index: pthrs 0.2.0");
             println!("tensor backend: Candle 0.11.0");
             println!("native checkpoint loader: .pth -> pthrs -> Candle tensors");
             println!("native retrieval: FAISS IVF-Flat .index via pthrs");
             println!("desktop app: egui/eframe 0.36.1");
-            println!("current blocker: RVC generator forward pass and native feature/F0 models");
+            println!("offline v2 path: native ContentVec + DSP F0 + RVC generator");
             Ok(())
         }
         Some("help") | Some("--help") | Some("-h") | None => {
@@ -160,6 +201,10 @@ fn print_usage() {
     println!(concat!(
         "  rvc-rs prepare-native <model.pth> <model.index|-> ",
         "[auto|cpu|cuda:N|metal:N]"
+    ));
+    println!(concat!(
+        "  rvc-rs convert <model.pth> <hubert_base.pt> <model.index|-> ",
+        "<input> <output.wav> [pitch-semitones] [auto|cpu|cuda:N|metal:N]"
     ));
     println!();
     println!("The production direction is direct .pth/.index inference on Candle.");
