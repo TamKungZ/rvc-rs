@@ -1,0 +1,49 @@
+[workspace]
+members = [
+    "apps/rvc-rs-cli",
+    "apps/rvc-rs-inference",
+    "crates/rvc-rs-audio",
+    "crates/rvc-rs-candle",
+    "crates/rvc-rs-core",
+    "crates/rvc-rs-dsp",
+    "crates/rvc-rs-engine",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["TamKungZ_ <dev@tamkungz.me>"]
+repository = "https://github.com/TamKungZ/rvc-rs"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+candle-core = "=0.11.0"
+candle-nn = "=0.11.0"
+cpal = "=0.18.1"
+eframe = { version = "=0.36.1", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "persistence",
+    "wayland",
+    "x11",
+] }
+pthrs = "=0.2.0"
+rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+rvc-rs-audio = { path = "crates/rvc-rs-audio" }
+rvc-rs-candle = { path = "crates/rvc-rs-candle" }
+rvc-rs-core = { path = "crates/rvc-rs-core" }
+rvc-rs-dsp = { path = "crates/rvc-rs-dsp" }
+rvc-rs-engine = { path = "crates/rvc-rs-engine" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
+
+[profile.dev.package."*"]
+opt-level = 2

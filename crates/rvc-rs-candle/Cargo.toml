@@ -1,0 +1,23 @@
+[package]
+name = "rvc-rs-candle"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal"]
+
+[dependencies]
+candle-core.workspace = true
+candle-nn.workspace = true
+pthrs.workspace = true
+rvc-rs-core.workspace = true
+thiserror.workspace = true
+
+[lib]
+path = "src/lib.rs"

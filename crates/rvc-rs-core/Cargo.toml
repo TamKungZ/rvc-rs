@@ -1,0 +1,15 @@
+[package]
+name = "rvc-rs-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[lib]
+path = "src/lib.rs"

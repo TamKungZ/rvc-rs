@@ -1,0 +1,21 @@
+[package]
+name = "rvc-rs-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+cuda = ["rvc-rs-engine/cuda"]
+metal = ["rvc-rs-engine/metal"]
+
+[dependencies]
+rvc-rs-core.workspace = true
+rvc-rs-engine.workspace = true
+
+[[bin]]
+name = "rvc-rs"
+path = "src/main.rs"

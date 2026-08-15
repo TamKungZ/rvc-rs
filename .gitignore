@@ -1,0 +1,13 @@
+/target/
+*.pth
+*.index
+*.onnx
+*.wav
+*.flac
+*.mp3
+*.npy
+*.npz
+*.safetensors
+!tests/fixtures/**/*.json
+!tests/fixtures/**/*.md
+

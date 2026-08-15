@@ -1,0 +1,23 @@
+[package]
+name = "rvc-rs-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+cuda = ["rvc-rs-candle/cuda"]
+metal = ["rvc-rs-candle/metal"]
+
+[dependencies]
+rvc-rs-candle.workspace = true
+rvc-rs-core.workspace = true
+rvc-rs-dsp.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lib]
+path = "src/lib.rs"
