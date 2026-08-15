@@ -34,14 +34,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("validate-offline") => {
             let checkpoint = required(&mut arguments, "model.pth")?;
+            let index = optional_path(required(&mut arguments, "model.index or -")?);
             let input_audio = required(&mut arguments, "input audio")?;
             let output_audio = required(&mut arguments, "output.wav")?;
-            let index = arguments.next().map(PathBuf::from);
             reject_extra(arguments)?;
 
             let mut engine = Engine::new();
             engine.set_model(ModelFiles {
                 checkpoint: PathBuf::from(checkpoint),
+                contentvec: None,
+                rmvpe: None,
                 index,
             });
             engine.validate_offline(&OfflineJob {
@@ -49,16 +51,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 output_audio: PathBuf::from(output_audio),
             })?;
             println!("offline job paths and configuration are valid");
-            println!("generator execution remains gated until reference parity passes");
+            println!("native .pth/.index paths are valid; generator forward remains in progress");
+            Ok(())
+        }
+        Some("prepare-native") => {
+            let model = required(&mut arguments, "model.pth")?;
+            let index = optional_path(required(&mut arguments, "model.index or -")?);
+            let device = parse_device(arguments.next().as_deref().unwrap_or("auto"))?;
+            reject_extra(arguments)?;
+
+            let mut engine = Engine::new();
+            engine.set_config(EngineConfig {
+                device,
+                retrieval_rate: if index.is_some() { 0.75 } else { 0.0 },
+                ..EngineConfig::default()
+            })?;
+            engine.set_model(ModelFiles {
+                checkpoint: PathBuf::from(model),
+                contentvec: None,
+                rmvpe: None,
+                index,
+            });
+            let report = engine.prepare_native()?;
+            println!(
+                "loaded {} generator tensors: {}-D features, {} Hz, {} speaker(s), f0={}",
+                report.tensor_count,
+                report.feature_dimension,
+                report.sample_rate,
+                report.speaker_count,
+                report.uses_f0
+            );
+            match report.index_vectors {
+                Some(vectors) => println!("loaded retrieval index with {vectors} vectors"),
+                None => println!("retrieval index disabled"),
+            }
             Ok(())
         }
         Some("status") => {
             reject_extra(arguments)?;
-            println!("rvc-rs 0.1.0 scaffold");
+            println!("rvc-rs 0.3.0");
             println!("checkpoint/index: pthrs 0.2.0");
             println!("tensor backend: Candle 0.11.0");
+            println!("native checkpoint loader: .pth -> pthrs -> Candle tensors");
+            println!("native retrieval: FAISS IVF-Flat .index via pthrs");
             println!("desktop app: egui/eframe 0.36.1");
-            println!("next milestone: v2/40k/F0 offline generator parity");
+            println!("current blocker: RVC generator forward pass and native feature/F0 models");
             Ok(())
         }
         Some("help") | Some("--help") | Some("-h") | None => {
@@ -99,6 +136,10 @@ fn required(arguments: &mut impl Iterator<Item = String>, name: &str) -> Result<
         .ok_or_else(|| format!("missing argument: {name}"))
 }
 
+fn optional_path(value: String) -> Option<PathBuf> {
+    (value != "-").then(|| PathBuf::from(value))
+}
+
 fn reject_extra(mut arguments: impl Iterator<Item = String>) -> Result<(), String> {
     if let Some(argument) = arguments.next() {
         return Err(format!("unexpected argument: {argument}"));
@@ -107,13 +148,19 @@ fn reject_extra(mut arguments: impl Iterator<Item = String>) -> Result<(), Strin
 }
 
 fn print_usage() {
-    println!("rvc-rs — native Rust RVC development CLI");
+    println!("rvc-rs — Rust RVC file-conversion CLI");
     println!();
     println!("Usage:");
     println!("  rvc-rs status");
     println!("  rvc-rs doctor [auto|cpu|cuda:N|metal:N]");
-    println!("  rvc-rs validate-offline <model.pth> <input> <output.wav> [model.index]");
+    println!(concat!(
+        "  rvc-rs validate-offline <model.pth> <model.index|-> ",
+        "<input> <output.wav>"
+    ));
+    println!(concat!(
+        "  rvc-rs prepare-native <model.pth> <model.index|-> ",
+        "[auto|cpu|cuda:N|metal:N]"
+    ));
     println!();
-    println!("Voice conversion will unlock after generator reference parity passes.");
+    println!("The production direction is direct .pth/.index inference on Candle.");
 }
-
