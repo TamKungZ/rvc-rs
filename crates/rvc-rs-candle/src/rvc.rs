@@ -15,6 +15,9 @@ use candle_nn::{
 use rvc_rs_core::GeneratorInput;
 
 const LRELU: f64 = 0.1;
+// `torch.nn.functional.leaky_relu(x)` uses 0.01 when no slope is supplied.
+// RVC intentionally uses that default only immediately before `conv_post`.
+const FINAL_LRELU: f64 = 0.01;
 
 #[derive(Debug)]
 pub(crate) struct RvcSynthesizer {
@@ -629,7 +632,7 @@ impl NsfDecoder {
         }
         let y = self
             .conv_post
-            .forward(&ops::leaky_relu(&x, LRELU)?)?
+            .forward(&ops::leaky_relu(&x, FINAL_LRELU)?)?
             .tanh()?;
         Ok(y.i((0, 0, ..))?.to_vec1::<f32>()?)
     }
@@ -709,21 +712,51 @@ impl ResBlock {
 
 fn sine_source(f0: &[f32], hop: usize, sample_rate: u32) -> Vec<f32> {
     let mut out = Vec::with_capacity(f0.len() * hop);
-    let mut phase = 0.0_f64;
+    // Match RVC SineGen._f02sine: each frame contains the fractional
+    // phase for samples 1..=hop, offset by the wrapped cumulative phase
+    // of all preceding frames.  Accumulating sample-by-sample looks
+    // similar for constant F0 but diverges at frame and voiced/unvoiced
+    // boundaries.
+    let mut accumulated_phase = 0.0_f64;
     let mut rng = 0x9e37_79b9_u32;
+    let mut spare_gaussian = None;
     for &hz in f0 {
-        for _ in 0..hop {
-            rng ^= rng << 13;
-            rng ^= rng >> 17;
-            rng ^= rng << 5;
-            let noise = (rng as f64 / u32::MAX as f64) * 2.0 - 1.0;
+        let cycles_per_sample = f64::from(hz) / f64::from(sample_rate);
+        for sample in 1..=hop {
+            let noise = gaussian(&mut rng, &mut spare_gaussian);
             if hz > 0.0 {
-                phase = (phase + f64::from(hz) / f64::from(sample_rate)).fract();
-                out.push(((phase * std::f64::consts::TAU).sin() * 0.1 + noise * 0.003) as f32);
+                let phase = accumulated_phase + cycles_per_sample * sample as f64;
+                out.push(
+                    ((phase * std::f64::consts::TAU).sin() * 0.1 + noise * 0.003) as f32,
+                );
             } else {
                 out.push((noise * (0.1 / 3.0)) as f32);
             }
         }
+        let endpoint = cycles_per_sample * hop as f64;
+        let wrapped_endpoint = (endpoint + 0.5) % 1.0 - 0.5;
+        accumulated_phase = (accumulated_phase + wrapped_endpoint) % 1.0;
     }
     out
+}
+
+fn gaussian(rng: &mut u32, spare: &mut Option<f64>) -> f64 {
+    if let Some(value) = spare.take() {
+        return value;
+    }
+
+    let uniform = |state: &mut u32| {
+        *state ^= *state << 13;
+        *state ^= *state >> 17;
+        *state ^= *state << 5;
+        // Keep Box-Muller away from ln(0), while retaining a uniform
+        // distribution over the representable xorshift output range.
+        (f64::from(*state) + 1.0) / (f64::from(u32::MAX) + 2.0)
+    };
+    let u1 = uniform(rng);
+    let u2 = uniform(rng);
+    let radius = (-2.0 * u1.ln()).sqrt();
+    let angle = std::f64::consts::TAU * u2;
+    *spare = Some(radius * angle.sin());
+    radius * angle.cos()
 }

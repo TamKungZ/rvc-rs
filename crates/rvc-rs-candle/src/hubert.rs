@@ -5,10 +5,10 @@
 //!
 //! Composes the [`FeatureExtractor`] (7-layer conv front-end), the
 //! [`PosConv`] (relative-position depthwise conv) and 12x
-//! [`HubertEncoderLayer`] (pre-norm transformer blocks), plus the
+//! [`HubertEncoderLayer`] (post-norm transformer blocks), plus the
 //! small [`FeatureProjection`] (`LayerNorm(512) + Linear(512 -> 768)`)
 //! and the single pre-encoder `LayerNorm(768)` that fairseq's
-//! `layer_norm_first = True` HuBERT-base applies before the stacked
+//! `layer_norm_first = False` HuBERT-base applies before the stacked
 //! encoder layers.
 //!
 //! # Forward path
@@ -29,10 +29,10 @@
 //!        hidden_states.push(h)
 //! ```
 //!
-//! Because HuBERT-base uses `layer_norm_first = True` (the fairseq /
-//! HF transformers `Wav2Vec2 do_stable_layer_norm = True` default for
-//! the `-base` variant), `encoder.layer_norm` is applied ONCE BEFORE the
-//! stack -- NOT after it. The per-layer hidden states captured by
+//! Because the RVC HuBERT-base checkpoint uses fairseq's
+//! `layer_norm_first = False`, `encoder.layer_norm` is applied once before
+//! the stack and every transformer layer applies its own two norms after
+//! the corresponding residual. The per-layer hidden states captured by
 //! [`HubertBase::forward_layers`] are therefore already
 //! post-encoder-layer-norm and match what fairseq's
 //! `extract_features(output_layer = N)` returns to RVC at readout time.
@@ -158,7 +158,7 @@ impl FeatureProjection {
 /// Composes [`FeatureExtractor`] + [`FeatureProjection`] + [`PosConv`] +
 /// the pre-encoder `LayerNorm(768)` + 12x [`HubertEncoderLayer`] into the
 /// full ContentVec front-end. See the module-level docs for the forward
-/// path, the `layer_norm_first = True` rationale, and the per-layer
+/// path, the `layer_norm_first = False` rationale, and the per-layer
 /// hidden-state semantics returned by [`Self::forward_layers`].
 pub(super) struct HubertBase {
     feature_extractor: FeatureExtractor,
@@ -166,7 +166,7 @@ pub(super) struct HubertBase {
     pos_conv: PosConv,
     /// `encoder.layer_norm` from the fairseq state dict. Applied ONCE,
     /// BEFORE the 12 encoder layers, per HuBERT-base's
-    /// `layer_norm_first = True`. There is NO matching post-stack
+    /// `layer_norm_first = False`. There is NO matching post-stack
     /// `LayerNorm`.
     pre_encoder_layer_norm: LayerNorm,
     layers: Vec<HubertEncoderLayer>,
@@ -294,7 +294,7 @@ impl HubertBase {
 
             // 5. Pre-encoder LayerNorm: applied ONCE, BEFORE the 12
             //    encoder layers, per HuBERT-base's
-            //    `layer_norm_first = True`. There is no matching
+            //    `layer_norm_first = False`. There is no matching
             //    post-stack LayerNorm.
             let mut h = self.pre_encoder_layer_norm.forward(&h)?;
 

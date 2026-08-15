@@ -25,7 +25,7 @@ for exactly once.
 - [x] Residual coupling flow
 - [x] NSF sine source
 - [x] HiFi-GAN upsampling decoder and residual blocks
-- [x] v2 F0 top-level forward (validated on TITAN 32k)
+- [x] v2 F0 top-level forward implemented
 - [ ] Intermediate tensor comparisons against Python
 - [ ] Final waveform tolerance and finite-value checks
 
@@ -38,7 +38,7 @@ Exit: generator-ready tensors produce the same waveform as the Python
 - [x] v2 layer-12 features
 - [ ] v1 layer-9 + final projection
 - [ ] RMVPE architecture and checkpoint adapter
-- [x] Lightweight autocorrelation F0, transpose, and quantization
+- [x] Lightweight YIN F0, transpose, and quantization
 - [x] Native `.index` retrieval blend
 - [x] Functional WAV-to-generator-input pipeline
 - [x] Mandatory managed HuBERT download, cache, and integrity verification

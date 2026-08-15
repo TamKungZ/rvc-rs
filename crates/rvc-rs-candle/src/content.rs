@@ -15,11 +15,12 @@
 //!
 //! - **Feature extractor**: 7-layer 1-D conv stack at the raw audio,
 //!   strides `(5, 2, 2, 2, 2, 2, 2)` for a combined 320x downsample
-//!   (16 kHz -> 50 Hz frame rate). Each layer is `Conv1d -> GroupNorm`
-//!   (first layer) or `Conv1d -> LayerNorm` (remaining six) with GELU.
+//!   (16 kHz -> 50 Hz frame rate). The first layer is
+//!   `Conv1d -> GroupNorm(512, 512) -> GELU`; the remaining six are
+//!   `Conv1d -> GELU`.
 //! - **Feature projection**: `LayerNorm -> Linear(512 -> 768) -> Dropout`.
 //! - **Transformer encoder**: 12 layers, 768 hidden, 12 heads,
-//!   3072 FFN with GELU, pre-norm. Relative positional bias is applied
+//!   3072 FFN with GELU, post-norm. Relative positional bias is applied
 //!   through a 1-D depthwise conv (`conv_pos`, kernel 128, groups 16)
 //!   added to the input embeddings before the first attention block.
 //!
@@ -44,7 +45,7 @@
 //! |------------------------------------------------------|-----------------------------------------------------|
 //! | `feature_extractor.conv_layers.{i}.0.weight`         | `feature_extractor.conv_layers.{i}.conv.weight`     |
 //! | `feature_extractor.conv_layers.0.2.{weight,bias}`    | `feature_extractor.conv_layers.0.layer_norm.{w,b}`  |
-//! | `feature_extractor.conv_layers.{i>=1}.2.1.{w,b}`     | `feature_extractor.conv_layers.{i}.layer_norm.{w,b}`|
+//! | layers `1..6` have no normalization parameters       | n/a                                                 |
 //! | `post_extract_proj.{weight,bias}`                    | `feature_projection.projection.{weight,bias}`       |
 //! | `layer_norm.{weight,bias}`                           | `feature_projection.layer_norm.{weight,bias}`       |
 //! | `encoder.pos_conv.0.{weight_g,weight_v,bias}`        | `encoder.pos_conv_embed.conv.{w_g,w_v,bias}`        |
@@ -54,10 +55,11 @@
 //! | `encoder.layers.{i}.fc1.*` / `fc2.*`                 | `encoder.layers.{i}.feed_forward.{int,out}_dense.*` |
 //! | `encoder.layers.{i}.final_layer_norm.*`              | `encoder.layers.{i}.final_layer_norm.*`             |
 //!
-//! `pos_conv` uses PyTorch weight-norm -- `weight_g` (gain, shape
-//! `[768]`) and `weight_v` (direction, shape `[768, 48, 128]`) must be
+//! `pos_conv` uses PyTorch weight-norm with `dim=2` -- `weight_g` (gain,
+//! shape `[1, 1, 128]`) and `weight_v` (direction, shape
+//! `[768, 48, 128]`) must be
 //! combined into a single dense `[768, 48, 128]` kernel via
-//! `weight = weight_g * weight_v / ||weight_v||` along the input dims.
+//! `weight = weight_g * weight_v / ||weight_v||` over axes 0 and 1.
 //!
 //! # Loader status
 //!

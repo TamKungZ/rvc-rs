@@ -175,7 +175,7 @@ impl OfflineTask {
     pub fn run(self) -> Result<OfflineReport, EngineError> {
         let started = Instant::now();
         let decoded = decode_audio_mono(&self.job.input_audio)?;
-        let samples_16k = linear_resample(&decoded.samples, decoded.sample_rate, 16_000);
+        let samples_16k = bandlimited_resample(&decoded.samples, decoded.sample_rate, 16_000);
         let mut generator = CandleGenerator::load(&self.model.checkpoint, self.config.device)?;
         let spec = generator.spec();
         let contentvec_path = assets::ensure_hubert()?;
@@ -200,8 +200,8 @@ impl OfflineTask {
             index.blend_frames(&mut base_features, self.config.retrieval_rate, 8, 1)?;
         }
 
-        let features = upsample_features_2x(&base_features, content_frames, dimensions);
-        let pitch = extract_pitch_autocorrelation(&samples_16k, self.config.pitch_shift);
+        let features = upsample_features_nearest_2x(&base_features, content_frames, dimensions);
+        let pitch = extract_pitch_yin(&samples_16k, self.config.pitch_shift);
         let frames = (features.len() / dimensions).min(pitch.len());
         if frames == 0 {
             return Err(EngineError::FeatureUnavailable(
@@ -237,50 +237,94 @@ impl OfflineTask {
     }
 }
 
-fn linear_resample(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+fn bandlimited_resample(
+    samples: &[f32],
+    source_rate: u32,
+    target_rate: u32,
+) -> Vec<f32> {
     if samples.is_empty() || source_rate == target_rate {
         return samples.to_vec();
     }
-    let length = (samples.len() as u64 * u64::from(target_rate) / u64::from(source_rate)) as usize;
+    let length =
+        (samples.len() as u64 * u64::from(target_rate) / u64::from(source_rate)) as usize;
     let step = f64::from(source_rate) / f64::from(target_rate);
+    let cutoff = (f64::from(target_rate) / f64::from(source_rate)).min(1.0) * 0.94;
+    const RADIUS: isize = 16;
+
     (0..length)
         .map(|i| {
             let position = i as f64 * step;
-            let left = position.floor() as usize;
-            let right = (left + 1).min(samples.len() - 1);
-            let amount = (position - left as f64) as f32;
-            samples[left] * (1.0 - amount) + samples[right] * amount
+            let center = position.floor() as isize;
+            let mut weighted = 0.0_f64;
+            let mut weight_sum = 0.0_f64;
+            for tap in center - RADIUS + 1..=center + RADIUS {
+                if tap < 0 || tap >= samples.len() as isize {
+                    continue;
+                }
+                let distance = position - tap as f64;
+                let normalized = distance / RADIUS as f64;
+                if normalized.abs() >= 1.0 {
+                    continue;
+                }
+                // Windowed-sinc low-pass.  Linear interpolation aliases
+                // everything above 8 kHz into HuBERT's 16 kHz input when
+                // converting common 44.1/48 kHz WAVs; those aliases corrupt
+                // both content features and F0.
+                let sinc_argument = cutoff * distance;
+                let sinc = if sinc_argument.abs() < 1e-12 {
+                    1.0
+                } else {
+                    (std::f64::consts::PI * sinc_argument).sin()
+                        / (std::f64::consts::PI * sinc_argument)
+                };
+                let window = 0.5 * (1.0 + (std::f64::consts::PI * normalized).cos());
+                let weight = cutoff * sinc * window;
+                weighted += f64::from(samples[tap as usize]) * weight;
+                weight_sum += weight;
+            }
+            if weight_sum.abs() > 1e-12 {
+                (weighted / weight_sum) as f32
+            } else {
+                samples[center.clamp(0, samples.len() as isize - 1) as usize]
+            }
         })
         .collect()
 }
 
-fn upsample_features_2x(input: &[f32], frames: usize, dimensions: usize) -> Vec<f32> {
+fn upsample_features_nearest_2x(
+    input: &[f32],
+    frames: usize,
+    dimensions: usize,
+) -> Vec<f32> {
     if frames == 0 {
         return Vec::new();
     }
     let mut output = vec![0.0; frames * 2 * dimensions];
     for frame in 0..frames * 2 {
-        let position = frame as f32 * 0.5;
-        let left = (position.floor() as usize).min(frames - 1);
-        let right = (left + 1).min(frames - 1);
-        let amount = position - left as f32;
-        for d in 0..dimensions {
-            output[frame * dimensions + d] = input[left * dimensions + d] * (1.0 - amount)
-                + input[right * dimensions + d] * amount;
-        }
+        let source = frame / 2;
+        let input_start = source * dimensions;
+        let output_start = frame * dimensions;
+        output[output_start..output_start + dimensions]
+            .copy_from_slice(&input[input_start..input_start + dimensions]);
     }
     output
 }
 
-fn extract_pitch_autocorrelation(samples: &[f32], semitones: i8) -> Vec<f32> {
+fn extract_pitch_yin(samples: &[f32], semitones: i8) -> Vec<f32> {
     const RATE: usize = 16_000;
     const HOP: usize = 160;
     const WINDOW: usize = 1_024;
     const MIN_LAG: usize = RATE / 1_100;
     const MAX_LAG: usize = RATE / 50;
+    const ABSOLUTE_THRESHOLD: f32 = 0.15;
+    const FALLBACK_THRESHOLD: f32 = 0.22;
     let frames = samples.len() / HOP;
     let shift = 2f32.powf(f32::from(semitones) / 12.0);
     let mut output = Vec::with_capacity(frames);
+    let mut windowed = vec![0.0_f32; WINDOW];
+    let mut difference = vec![0.0_f32; MAX_LAG + 1];
+    let mut cmnd = vec![1.0_f32; MAX_LAG + 1];
+
     for frame in 0..frames {
         let center = frame * HOP;
         let start = center.saturating_sub(WINDOW / 2);
@@ -295,30 +339,82 @@ fn extract_pitch_autocorrelation(samples: &[f32], semitones: i8) -> Vec<f32> {
             output.push(0.0);
             continue;
         }
-        let mut best_lag = MIN_LAG;
-        let mut best = -1.0_f32;
-        for lag in MIN_LAG..=MAX_LAG.min(slice.len() / 2) {
-            let mut correlation = 0.0;
-            let mut left_energy = 1e-9;
-            let mut right_energy = 1e-9;
-            for i in (0..slice.len() - lag).step_by(2) {
-                let a = slice[i];
-                let b = slice[i + lag];
-                correlation += a * b;
-                left_energy += a * a;
-                right_energy += b * b;
-            }
-            let normalized = correlation / (left_energy * right_energy).sqrt();
-            if normalized > best {
-                best = normalized;
-                best_lag = lag;
-            }
+
+        let mean = slice.iter().copied().sum::<f32>() / slice.len() as f32;
+        let denominator = (slice.len() - 1) as f32;
+        for (index, (&sample, destination)) in
+            slice.iter().zip(windowed.iter_mut()).enumerate()
+        {
+            let hann = 0.5
+                - 0.5
+                    * (2.0 * std::f32::consts::PI * index as f32 / denominator).cos();
+            *destination = (sample - mean) * hann;
         }
-        output.push(if best >= 0.35 {
-            RATE as f32 / best_lag as f32 * shift
+        let values = &windowed[..slice.len()];
+
+        difference.fill(0.0);
+        let max_lag = MAX_LAG.min(values.len() / 2);
+        for lag in 1..=max_lag {
+            let mut sum = 0.0_f32;
+            for index in 0..values.len() - lag {
+                let delta = values[index] - values[index + lag];
+                sum += delta * delta;
+            }
+            difference[lag] = sum;
+        }
+
+        cmnd.fill(1.0);
+        let mut cumulative = 0.0_f32;
+        for lag in 1..=max_lag {
+            cumulative += difference[lag];
+            cmnd[lag] = if cumulative > f32::EPSILON {
+                difference[lag] * lag as f32 / cumulative
+            } else {
+                1.0
+            };
+        }
+
+        // YIN selects the first sufficiently periodic local minimum rather
+        // than the global autocorrelation maximum.  The latter strongly
+        // preferred short, high-frequency lags in breath and silence and was
+        // the source of 800-1100 Hz spikes in real conversion input.
+        let mut selected = None;
+        let mut lag = MIN_LAG;
+        while lag < max_lag {
+            if cmnd[lag] < ABSOLUTE_THRESHOLD {
+                while lag < max_lag && cmnd[lag + 1] < cmnd[lag] {
+                    lag += 1;
+                }
+                selected = Some(lag);
+                break;
+            }
+            lag += 1;
+        }
+
+        if selected.is_none() {
+            let fallback = (MIN_LAG..=max_lag)
+                .min_by(|&left, &right| cmnd[left].total_cmp(&cmnd[right]));
+            selected = fallback.filter(|&candidate| cmnd[candidate] <= FALLBACK_THRESHOLD);
+        }
+
+        let Some(lag) = selected else {
+            output.push(0.0);
+            continue;
+        };
+        let refined = if lag > 1 && lag < max_lag {
+            let left = cmnd[lag - 1];
+            let middle = cmnd[lag];
+            let right = cmnd[lag + 1];
+            let curvature = left - 2.0 * middle + right;
+            if curvature.abs() > 1e-9 {
+                lag as f32 + 0.5 * (left - right) / curvature
+            } else {
+                lag as f32
+            }
         } else {
-            0.0
-        });
+            lag as f32
+        };
+        output.push(RATE as f32 / refined * shift);
     }
     output
 }
@@ -681,5 +777,39 @@ mod tests {
             index: None,
         });
         assert_eq!(engine.state(), &EngineState::Configured);
+    }
+
+    #[test]
+    fn yin_tracks_a_clean_sine_without_octave_spikes() {
+        let samples: Vec<f32> = (0..32_000)
+            .map(|index| {
+                (2.0 * std::f32::consts::PI * 220.0 * index as f32 / 16_000.0).sin() * 0.2
+            })
+            .collect();
+        let pitch = extract_pitch_yin(&samples, 0);
+        let voiced: Vec<f32> = pitch.into_iter().filter(|&hz| hz > 0.0).collect();
+        assert!(!voiced.is_empty());
+        assert!(voiced.iter().all(|&hz| (hz - 220.0).abs() < 3.0));
+    }
+
+    #[test]
+    fn yin_rejects_silence() {
+        let silence = vec![0.0; 16_000];
+        let pitch = extract_pitch_yin(&silence, 0);
+        assert!(pitch.iter().all(|&hz| hz == 0.0));
+    }
+
+    #[test]
+    fn bandlimited_resampler_preserves_duration_and_dc() {
+        let source = vec![0.25_f32; 44_100];
+        let output = bandlimited_resample(&source, 44_100, 16_000);
+        assert_eq!(output.len(), 16_000);
+        assert!(output.iter().all(|&sample| (sample - 0.25).abs() < 1e-5));
+    }
+
+    #[test]
+    fn feature_upsampling_matches_torch_nearest() {
+        let output = upsample_features_nearest_2x(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        assert_eq!(output, [1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
     }
 }

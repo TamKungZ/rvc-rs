@@ -19,9 +19,9 @@ microphone -> rolling 16 kHz context -> ContentVec + F0
 The workspace does not depend on `vc-rs`, `vc-core`, ONNX Runtime, Python,
 PyTorch, libtorch, or native FAISS.
 
-## Current native checkpoint (0.4.1)
+## Current native checkpoint (0.4.2-rc.1)
 
-Implemented and tested:
+Implemented; release-candidate verification is described below:
 
 - safe ZIP-based PyTorch `.pth` parsing through `pthrs`;
 - extraction and validation of RVC version, sample rate, F0 flag, speaker count,
@@ -34,19 +34,22 @@ Implemented and tested:
 - allocation-free normalized-correlation SOLA selection and raised-cosine
   crossfade;
 - CPU/CUDA/Metal device selection boundaries.
-- native ContentVec/HuBERT v2 inference;
-- in-tree autocorrelation F0 extraction and RVC pitch quantization;
-- complete v2 F0 inference (`enc_p`, residual coupling flow, NSF source, and
-  HiFi-GAN decoder);
+- native ContentVec/HuBERT v2 inference with fairseq-compatible 512-group
+  feature normalization and post-norm transformer layers;
+- in-tree YIN F0 extraction with RVC pitch quantization;
+- v2 F0 inference (`enc_p`, residual coupling flow, NSF source, and HiFi-GAN
+  decoder), with final numerical parity still pending;
 - WAV decode, resample, conversion, and float-WAV output;
-- tested conversion with the TITAN 32k `.pth` and matching `.index` from the
-  `pthrs` compatibility matrix.
+- nearest-neighbor 2x content-feature expansion matching PyTorch RVC;
+- band-limited input resampling for 44.1/48 kHz WAV sources;
 - mandatory managed `hubert_base.pt`: downloaded once into the per-user cache,
   pinned by immutable revision, and verified by size plus SHA-256 before use;
 - no ContentVec/HuBERT file argument or picker in the CLI and GUI.
 
-Real-time CPAL device streaming, RMVPE parity, v1 ContentVec, and non-F0 model
-support remain in progress.
+The 0.4.2 release candidate corrects failures found with a real v2/40k/F0
+checkpoint and singing input. End-to-end PyTorch waveform parity is not yet
+claimed. Real-time CPAL streaming, native RMVPE, v1 ContentVec, and non-F0
+model support remain in progress.
 
 ## Inspect and prepare a real model
 
@@ -98,7 +101,8 @@ The managed model is stored at the OS cache location:
 - Windows: `%LOCALAPPDATA%\rvc-rs\models\hubert_base.pt`.
 
 See [Managed model assets](docs/MODEL_ASSETS.md) for pinned provenance and
-integrity metadata.
+integrity metadata. The real-audio failure and 0.4.2 corrections are recorded
+in [the 0.4.2 regression note](docs/REGRESSION_0.4.2.md).
 
 ## Workspace
 

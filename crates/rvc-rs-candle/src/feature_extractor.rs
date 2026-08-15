@@ -79,10 +79,14 @@ const NORM_EPS: f64 = 1e-5;
 /// every layer except the first).
 const HIDDEN_CHANNELS: usize = 512;
 
-/// Number of groups for layer 0's `GroupNorm` (fairseq default for the
-/// HuBERT-base feature extractor: 32 groups across 512 channels = 16
-/// channels per group).
-const GROUP_NORM_GROUPS: usize = 32;
+/// Number of groups for layer 0's `GroupNorm`.
+///
+/// Fairseq constructs this as `Fp32GroupNorm(dim, dim)`, so HuBERT-base
+/// uses one group per output channel (`512` groups), not PyTorch's common
+/// 32-group default.  The affine parameter shapes do not encode the group
+/// count, which is why a wrong value still loads the checkpoint while
+/// producing completely different content features.
+const GROUP_NORM_GROUPS: usize = HIDDEN_CHANNELS;
 
 /// `(kernel, stride)` for each of the seven conv layers, in order. The
 /// kernels match fairseq's
@@ -145,7 +149,7 @@ impl FeatureExtractor {
             let conv = conv1d_no_bias(in_channels, HIDDEN_CHANNELS, kernel, cfg, layer_vb.pp("0"))?;
             let gn = if i == 0 {
                 // Layer 0 only: `conv_layers.0.2.{weight,bias}` is the
-                // `GroupNorm(32, 512)`. Sequential index `2` lands
+                // `GroupNorm(512, 512)`. Sequential index `2` lands
                 // directly on the `GroupNorm` module (no inner wrapper).
                 Some(group_norm(
                     GROUP_NORM_GROUPS,
@@ -227,5 +231,6 @@ mod tests {
         assert_eq!(combined, 320);
         // First layer kernel must be 10 (fairseq HuBERT-base default).
         assert_eq!(LAYER_SHAPES[0].0, 10);
+        assert_eq!(GROUP_NORM_GROUPS, HIDDEN_CHANNELS);
     }
 }

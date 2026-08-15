@@ -48,8 +48,11 @@ recorded as parity fixtures before each Candle block is accepted.
 
 ## Model implementation status
 
-Items 1–6 and native v2 ContentVec are implemented. The next work is a
-resident chunked pipeline, CPAL devices, then RMVPE and numerical parity.
+The native v2 model path is implemented, but offline numerical parity remains
+the release gate. Real-checkpoint testing found and corrected HuBERT
+normalization, feature upsampling, source generation, resampling, and F0
+failures in 0.4.2-rc.1. Streaming work stays blocked until the corrected
+offline path passes reference and listening tests.
 
 ## Adapter policy
 

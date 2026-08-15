@@ -15,21 +15,19 @@
 //!
 //! HuBERT-base ships 12 stacked [`HubertEncoderLayer`]s, each carrying:
 //!
-//! - `self_attn_layer_norm` -- pre-norm before attention
+//! - `self_attn_layer_norm` -- post-norm after the attention residual
 //! - `self_attn` -- 12-head bidirectional self-attention,
 //!   hidden 768, head-dim 64, separate `q_proj` / `k_proj` / `v_proj` /
 //!   `out_proj` linears (fairseq layout, not the combined-QKV Bark
 //!   layout)
-//! - `final_layer_norm` -- pre-norm before FFN
+//! - `final_layer_norm` -- post-norm after the FFN residual
 //! - `fc1` / `fc2` -- 768 -> 3072 -> 768 FFN with `GELU` (erf form)
 //!
-//! Forward (pre-norm):
+//! Forward (post-norm, matching `layer_norm_first = false`):
 //!
 //! ```text
-//! h = self_attn_layer_norm(xs)
-//! xs = xs + self_attn(h)
-//! h = final_layer_norm(xs)
-//! xs = xs + fc2(gelu(fc1(h)))
+//! xs = self_attn_layer_norm(xs + self_attn(xs))
+//! xs = final_layer_norm(xs + fc2(gelu(fc1(xs))))
 //! ```
 //!
 //! The activation is the erf-based `gelu_erf`, matching the
@@ -46,11 +44,11 @@
 //! `weight_g` (gain) and `weight_v` (direction) instead of a single
 //! `weight`, and we synthesize the dense kernel at load time:
 //!
-//! `weight = weight_g * (weight_v / ||weight_v||_{axes (1, 2)})`
+//! `weight = weight_g * (weight_v / ||weight_v||_{axes (0, 1)})`
 //!
-//! with the norm taken jointly over the input-channel and kernel axes,
-//! keeping the output-channel axis 0 independent. This is PyTorch's
-//! `weight_norm(dim=0)` convention. The synthesized dense tensor is then
+//! with the norm taken jointly over the output- and input-channel axes,
+//! keeping the kernel-position axis 2 independent. This is fairseq's
+//! `weight_norm(dim=2)` convention. The synthesized dense tensor is then
 //! handed to a hand-constructed [`Conv1d`] (we bypass `candle_nn`'s
 //! builders because they expect a single `weight` key in the
 //! [`VarBuilder`], which the weight-normalised checkpoint does not
@@ -74,9 +72,9 @@
 //! PosConv keys, under `encoder.pos_conv.0` (fairseq wraps it in a
 //! one-element `Sequential`, hence the `.0`):
 //!
-//! - `weight_g` -- typically `[768, 1, 1]`, occasionally `[768]`
+//! - `weight_g` -- `[1, 1, 128]`, occasionally flattened to `[128]`
 //!   depending on how the checkpoint was serialised. [`PosConv::load`]
-//!   accepts both and reshapes as needed.
+//!   accepts both forms.
 //! - `weight_v` -- `[768, 48, 128]` (`out`, `in_per_group = 768 / 16`,
 //!   `kernel`).
 //! - `bias` -- `[768]`.
@@ -230,9 +228,9 @@ impl HubertSelfAttention {
     }
 }
 
-/// One HuBERT-base transformer encoder layer (pre-norm).
+/// One HuBERT-base transformer encoder layer (post-norm).
 ///
-/// See the module-level docs for the four-step pre-norm forward
+/// See the module-level docs for the post-norm forward
 /// pattern, the fairseq state-dict key layout, and the
 /// `gelu_erf` activation choice.
 pub(super) struct HubertEncoderLayer {
@@ -270,16 +268,15 @@ impl HubertEncoderLayer {
         })
     }
 
-    /// Forward `(B, T, embed_dim) -> (B, T, embed_dim)` (pre-norm).
+    /// Forward `(B, T, embed_dim) -> (B, T, embed_dim)` (post-norm).
     pub(super) fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let h = self.self_attn_layer_norm.forward(xs)?;
-        let h = self.self_attn.forward(&h)?;
-        let xs = (xs + h)?;
-        let h = self.final_layer_norm.forward(&xs)?;
+        let h = self.self_attn.forward(xs)?;
+        let xs = self.self_attn_layer_norm.forward(&(xs + h)?)?;
         // FFN with the erf-based GELU (`F.gelu` upstream), matching the
         // sibling `FeatureExtractor` activation choice.
-        let h = self.fc2.forward(&self.fc1.forward(&h)?.gelu_erf()?)?;
-        &xs + h
+        let h = self.fc2.forward(&self.fc1.forward(&xs)?.gelu_erf()?)?;
+        let xs = (&xs + h)?;
+        self.final_layer_norm.forward(&xs)
     }
 }
 
