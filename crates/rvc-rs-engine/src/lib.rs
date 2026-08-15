@@ -3,8 +3,14 @@
 
 //! Shared orchestration state for the GUI, CLI, and future streaming worker.
 
-use rvc_rs_candle::{backend_smoke_test, resolve_device, CandleGenerator, RetrievalIndex};
-use rvc_rs_core::{ComputeDevice, VoiceGenerator};
+use candle_core::IndexOp;
+use rvc_rs_audio::{decode_audio_mono, write_wav_mono};
+use rvc_rs_candle::{
+    backend_smoke_test, resolve_device, CandleGenerator, ContentEncoder, RetrievalIndex, RvcVersion,
+};
+use rvc_rs_core::{
+    ComputeDevice, FeatureMatrix, GeneratorInput, ModelVersion, PitchTrack, VoiceGenerator,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -84,6 +90,14 @@ impl ModelFiles {
     /// Validates extensions and local file presence.
     pub fn validate(&self) -> Result<(), EngineError> {
         validate_file(&self.checkpoint, "pth", "voice model")?;
+        if let Some(contentvec) = &self.contentvec {
+            if !contentvec.is_file() {
+                return Err(EngineError::MissingFile {
+                    field: "ContentVec model",
+                    path: contentvec.clone(),
+                });
+            }
+        }
         if let Some(index) = &self.index {
             validate_file(index, "index", "retrieval index")?;
         }
@@ -167,11 +181,168 @@ pub struct OfflineTask {
 impl OfflineTask {
     /// Decodes, converts, and writes the requested audio file.
     pub fn run(self) -> Result<OfflineReport, EngineError> {
-        let _ = (&self.config, &self.model, &self.job, Instant::now());
-        Err(EngineError::FeatureUnavailable(
-            "native .pth loading and .index retrieval are active, but the Candle generator forward pass is not complete yet",
-        ))
+        let started = Instant::now();
+        let decoded = decode_audio_mono(&self.job.input_audio)?;
+        let samples_16k = linear_resample(&decoded.samples, decoded.sample_rate, 16_000);
+        let mut generator = CandleGenerator::load(&self.model.checkpoint, self.config.device)?;
+        let spec = generator.spec();
+        let contentvec_path = self
+            .model
+            .contentvec
+            .as_ref()
+            .ok_or(EngineError::MissingPath("ContentVec hubert_base.pt"))?;
+        if spec.version != ModelVersion::V2 {
+            return Err(EngineError::FeatureUnavailable(
+                "the current native ContentVec path supports RVC v2 checkpoints only",
+            ));
+        }
+        let encoder = ContentEncoder::load(contentvec_path, generator.device(), RvcVersion::V2)?;
+        let inference_started = Instant::now();
+        let encoded = encoder.encode(&samples_16k)?;
+        let (_, content_frames, dimensions) = encoded.dims3()?;
+        let mut base_features = encoded.i(0)?.flatten_all()?.to_vec1::<f32>()?;
+
+        if self.config.retrieval_rate > 0.0 {
+            let index_path = self
+                .model
+                .index
+                .as_ref()
+                .ok_or(EngineError::MissingPath("retrieval index"))?;
+            let mut index = RetrievalIndex::load(index_path, dimensions, 8)?;
+            index.blend_frames(&mut base_features, self.config.retrieval_rate, 8, 1)?;
+        }
+
+        let features = upsample_features_2x(&base_features, content_frames, dimensions);
+        let pitch = extract_pitch_autocorrelation(&samples_16k, self.config.pitch_shift);
+        let frames = (features.len() / dimensions).min(pitch.len());
+        if frames == 0 {
+            return Err(EngineError::FeatureUnavailable(
+                "source audio is too short to produce inference frames",
+            ));
+        }
+        let features = &features[..frames * dimensions];
+        let continuous: Vec<f32> = pitch.into_iter().take(frames).collect();
+        let coarse: Vec<i64> = continuous.iter().copied().map(pitch_to_coarse).collect();
+        let output = generator.synthesize(&GeneratorInput {
+            features: FeatureMatrix {
+                values: features,
+                frames,
+                dimensions,
+            },
+            pitch: Some(PitchTrack {
+                coarse: &coarse,
+                continuous_hz: &continuous,
+            }),
+            speaker_id: self.config.speaker_id,
+        })?;
+        let inference_time = inference_started.elapsed();
+        let sample_rate = spec.sample_rate.hz();
+        write_wav_mono(&self.job.output_audio, &output, sample_rate)?;
+        Ok(OfflineReport {
+            output_audio: self.job.output_audio,
+            samples: output.len(),
+            sample_rate,
+            chunks: 1,
+            elapsed: started.elapsed(),
+            inference_time,
+        })
     }
+}
+
+fn linear_resample(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+    if samples.is_empty() || source_rate == target_rate {
+        return samples.to_vec();
+    }
+    let length = (samples.len() as u64 * u64::from(target_rate) / u64::from(source_rate)) as usize;
+    let step = f64::from(source_rate) / f64::from(target_rate);
+    (0..length)
+        .map(|i| {
+            let position = i as f64 * step;
+            let left = position.floor() as usize;
+            let right = (left + 1).min(samples.len() - 1);
+            let amount = (position - left as f64) as f32;
+            samples[left] * (1.0 - amount) + samples[right] * amount
+        })
+        .collect()
+}
+
+fn upsample_features_2x(input: &[f32], frames: usize, dimensions: usize) -> Vec<f32> {
+    if frames == 0 {
+        return Vec::new();
+    }
+    let mut output = vec![0.0; frames * 2 * dimensions];
+    for frame in 0..frames * 2 {
+        let position = frame as f32 * 0.5;
+        let left = (position.floor() as usize).min(frames - 1);
+        let right = (left + 1).min(frames - 1);
+        let amount = position - left as f32;
+        for d in 0..dimensions {
+            output[frame * dimensions + d] = input[left * dimensions + d] * (1.0 - amount)
+                + input[right * dimensions + d] * amount;
+        }
+    }
+    output
+}
+
+fn extract_pitch_autocorrelation(samples: &[f32], semitones: i8) -> Vec<f32> {
+    const RATE: usize = 16_000;
+    const HOP: usize = 160;
+    const WINDOW: usize = 1_024;
+    const MIN_LAG: usize = RATE / 1_100;
+    const MAX_LAG: usize = RATE / 50;
+    let frames = samples.len() / HOP;
+    let shift = 2f32.powf(f32::from(semitones) / 12.0);
+    let mut output = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let center = frame * HOP;
+        let start = center.saturating_sub(WINDOW / 2);
+        let end = (start + WINDOW).min(samples.len());
+        let slice = &samples[start..end];
+        let rms = if slice.is_empty() {
+            0.0
+        } else {
+            (slice.iter().map(|x| x * x).sum::<f32>() / slice.len() as f32).sqrt()
+        };
+        if rms < 0.005 || slice.len() <= MAX_LAG + 2 {
+            output.push(0.0);
+            continue;
+        }
+        let mut best_lag = MIN_LAG;
+        let mut best = -1.0_f32;
+        for lag in MIN_LAG..=MAX_LAG.min(slice.len() / 2) {
+            let mut correlation = 0.0;
+            let mut left_energy = 1e-9;
+            let mut right_energy = 1e-9;
+            for i in (0..slice.len() - lag).step_by(2) {
+                let a = slice[i];
+                let b = slice[i + lag];
+                correlation += a * b;
+                left_energy += a * a;
+                right_energy += b * b;
+            }
+            let normalized = correlation / (left_energy * right_energy).sqrt();
+            if normalized > best {
+                best = normalized;
+                best_lag = lag;
+            }
+        }
+        output.push(if best >= 0.35 {
+            RATE as f32 / best_lag as f32 * shift
+        } else {
+            0.0
+        });
+    }
+    output
+}
+
+fn pitch_to_coarse(hz: f32) -> i64 {
+    if hz <= 0.0 {
+        return 1;
+    }
+    let mel = 1127.0 * (1.0 + hz / 700.0).ln();
+    let min = 1127.0_f32 * (1.0_f32 + 50.0_f32 / 700.0_f32).ln();
+    let max = 1127.0_f32 * (1.0_f32 + 1_100.0_f32 / 700.0_f32).ln();
+    (((mel - min) * 254.0 / (max - min) + 1.0).round() as i64).clamp(1, 255)
 }
 
 /// Fully resident native model state intended to be owned by the inference worker.
@@ -360,10 +531,11 @@ impl Engine {
     /// Validates all inputs needed for an offline conversion.
     pub fn validate_offline(&self, job: &OfflineJob) -> Result<(), EngineError> {
         self.config.validate()?;
-        self.model
-            .as_ref()
-            .ok_or(EngineError::NoModel)?
-            .validate()?;
+        let model = self.model.as_ref().ok_or(EngineError::NoModel)?;
+        model.validate()?;
+        if model.contentvec.is_none() {
+            return Err(EngineError::MissingPath("ContentVec hubert_base.pt"));
+        }
         job.validate()?;
         Ok(())
     }
@@ -467,6 +639,15 @@ pub enum EngineError {
     /// Candle initialization or inference failed.
     #[error(transparent)]
     Inference(#[from] rvc_rs_candle::InferenceError),
+    /// Audio decoding or WAV encoding failed.
+    #[error(transparent)]
+    Audio(#[from] rvc_rs_audio::AudioError),
+    /// ContentVec loading or inference failed.
+    #[error(transparent)]
+    Content(#[from] rvc_rs_candle::ContentError),
+    /// A raw Candle operation failed while assembling pipeline tensors.
+    #[error("tensor pipeline failed: {0}")]
+    Tensor(#[from] candle_core::Error),
     /// A deliberately gated project milestone is not implemented.
     #[error("feature unavailable: {0}")]
     FeatureUnavailable(&'static str),

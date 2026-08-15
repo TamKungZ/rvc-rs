@@ -13,9 +13,10 @@ cuda = ["rvc-rs-candle/cuda"]
 metal = ["rvc-rs-candle/metal"]
 
 [dependencies]
+candle-core.workspace = true
+rvc-rs-audio.workspace = true
 rvc-rs-candle.workspace = true
 rvc-rs-core.workspace = true
-rvc-rs-dsp.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
