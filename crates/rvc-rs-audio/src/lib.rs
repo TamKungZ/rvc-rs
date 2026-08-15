@@ -3,16 +3,7 @@
 
 //! Audio decoding, WAV encoding, and device contracts kept outside model code.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
-
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use thiserror::Error;
 
@@ -25,101 +16,45 @@ pub struct DecodedAudio {
     pub sample_rate: u32,
 }
 
-/// Decodes the first audio track recognized by Symphonia and mixes it to mono.
-///
-/// WAV, FLAC, MP3, Ogg/Vorbis, AAC/MP4 and other formats enabled by Symphonia
-/// are accepted. The source sample rate is preserved for the conversion output.
+/// Decodes PCM or floating-point WAV and mixes all channels to mono.
 pub fn decode_audio_mono(path: impl AsRef<Path>) -> Result<DecodedAudio, AudioError> {
     let path = path.as_ref();
-    let source = File::open(path).map_err(|source| AudioError::OpenFile {
+    let mut reader = hound::WavReader::open(path).map_err(|source| AudioError::Decode {
         path: path.to_owned(),
-        source,
+        message: source.to_string(),
     })?;
-    let stream = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
-    let mut hint = Hint::new();
-    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
-        hint.with_extension(extension);
+    let spec = reader.spec();
+    let channels = usize::from(spec.channels);
+    if channels == 0 {
+        return Err(AudioError::Decode {
+            path: path.to_owned(),
+            message: "WAV has zero channels".to_owned(),
+        });
     }
-
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|source| AudioError::Decode {
-            path: path.to_owned(),
-            message: source.to_string(),
-        })?;
-    let mut format = probed.format;
-    let track = format.default_track().ok_or_else(|| AudioError::Decode {
-        path: path.to_owned(),
-        message: "no supported audio track was found".to_owned(),
-    })?;
-    let track_id = track.id;
-    let sample_rate = track
-        .codec_params
-        .sample_rate
-        .ok_or_else(|| AudioError::Decode {
-            path: path.to_owned(),
-            message: "the source sample rate is unavailable".to_owned(),
-        })?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|source| AudioError::Decode {
-            path: path.to_owned(),
-            message: source.to_string(),
-        })?;
-
-    let mut mono = Vec::new();
-    loop {
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::IoError(source))
-                if source.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(SymphoniaError::ResetRequired) => {
-                return Err(AudioError::Decode {
-                    path: path.to_owned(),
-                    message: "the audio stream changed format while decoding".to_owned(),
-                });
-            }
-            Err(source) => {
-                return Err(AudioError::Decode {
+    let interleaved: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| AudioError::Decode {
+                path: path.to_owned(),
+                message: source.to_string(),
+            })?,
+        hound::SampleFormat::Int => {
+            let peak = ((1_u64 << spec.bits_per_sample.saturating_sub(1)) - 1) as f32;
+            reader
+                .samples::<i32>()
+                .map(|sample| sample.map(|value| value as f32 / peak))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|source| AudioError::Decode {
                     path: path.to_owned(),
                     message: source.to_string(),
-                });
-            }
-        };
-        if packet.track_id() != track_id {
-            continue;
+                })?
         }
-        let decoded = match decoder.decode(&packet) {
-            Ok(decoded) => decoded,
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(source) => {
-                return Err(AudioError::Decode {
-                    path: path.to_owned(),
-                    message: source.to_string(),
-                });
-            }
-        };
-        let channels = decoded.spec().channels.count();
-        if channels == 0 {
-            continue;
-        }
-        let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
-        buffer.copy_interleaved_ref(decoded);
-        mono.extend(
-            buffer
-                .samples()
-                .chunks(channels)
-                .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32),
-        );
-    }
+    };
+    let mono: Vec<f32> = interleaved
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect();
 
     if mono.is_empty() {
         return Err(AudioError::Decode {
@@ -129,7 +64,7 @@ pub fn decode_audio_mono(path: impl AsRef<Path>) -> Result<DecodedAudio, AudioEr
     }
     Ok(DecodedAudio {
         samples: mono,
-        sample_rate,
+        sample_rate: spec.sample_rate,
     })
 }
 
