@@ -3,9 +3,11 @@
 use eframe::egui;
 use rfd::FileDialog;
 use rvc_rs_core::ComputeDevice;
-use rvc_rs_engine::{Engine, EngineConfig, EngineState, ModelFiles, OfflineJob};
+use rvc_rs_engine::{Engine, EngineConfig, EngineState, ModelFiles, OfflineJob, OfflineReport};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::Duration;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -33,6 +35,8 @@ struct SavedForm {
     mode: ConversionMode,
     config: EngineConfig,
     checkpoint: String,
+    contentvec: String,
+    rmvpe: String,
     index: String,
     input_audio: String,
     output_audio: String,
@@ -42,6 +46,7 @@ struct InferenceApp {
     engine: Engine,
     form: SavedForm,
     messages: Vec<String>,
+    worker: Option<Receiver<Result<OfflineReport, String>>>,
 }
 
 impl InferenceApp {
@@ -56,9 +61,11 @@ impl InferenceApp {
             engine: Engine::new(),
             form,
             messages: vec![
-                "Workspace ready. Select an exported RVC checkpoint to begin.".to_owned(),
-                "Generator execution stays locked until reference parity passes.".to_owned(),
+                "Native direction: direct RVC .pth and optional FAISS .index.".to_owned(),
+                "Checkpoint/index preparation works; generator forward and real-time worker are under construction."
+                    .to_owned(),
             ],
+            worker: None,
         };
         app.sync_engine();
         app
@@ -76,6 +83,9 @@ impl InferenceApp {
     fn model_files(&self) -> ModelFiles {
         ModelFiles {
             checkpoint: PathBuf::from(&self.form.checkpoint),
+            contentvec: (!self.form.contentvec.is_empty())
+                .then(|| PathBuf::from(&self.form.contentvec)),
+            rmvpe: (!self.form.rmvpe.is_empty()).then(|| PathBuf::from(&self.form.rmvpe)),
             index: (!self.form.index.is_empty()).then(|| PathBuf::from(&self.form.index)),
         }
     }
@@ -88,7 +98,10 @@ impl InferenceApp {
     }
 
     fn offline_validation(&self) -> Result<(), String> {
-        self.form.config.validate().map_err(|error| error.to_string())?;
+        self.form
+            .config
+            .validate()
+            .map_err(|error| error.to_string())?;
         self.model_files()
             .validate()
             .map_err(|error| error.to_string())?;
@@ -104,6 +117,34 @@ impl InferenceApp {
         const MAX_MESSAGES: usize = 100;
         if self.messages.len() > MAX_MESSAGES {
             self.messages.drain(..self.messages.len() - MAX_MESSAGES);
+        }
+    }
+
+    fn poll_worker(&mut self) {
+        let result = self
+            .worker
+            .as_ref()
+            .and_then(|worker| match worker.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("conversion worker stopped without a result".to_owned()))
+                }
+                Err(TryRecvError::Empty) => None,
+            });
+        if let Some(result) = result {
+            self.engine.finish_offline(&result);
+            match &result {
+                Ok(report) => self.push_message(format!(
+                    "Completed: {} samples at {} Hz in {:.2}s (model {:.2}s) -> {}",
+                    report.samples,
+                    report.sample_rate,
+                    report.elapsed.as_secs_f32(),
+                    report.inference_time.as_secs_f32(),
+                    report.output_audio.display()
+                )),
+                Err(error) => self.push_message(error.clone()),
+            }
+            self.worker = None;
         }
     }
 
@@ -129,11 +170,7 @@ impl InferenceApp {
 
     fn mode_selector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.form.mode,
-                ConversionMode::Offline,
-                "Offline file",
-            );
+            ui.selectable_value(&mut self.form.mode, ConversionMode::Offline, "Offline file");
             ui.selectable_value(
                 &mut self.form.mode,
                 ConversionMode::Realtime,
@@ -144,13 +181,7 @@ impl InferenceApp {
 
     fn model_section(&mut self, ui: &mut egui::Ui) {
         ui.heading("Voice model");
-        path_picker(
-            ui,
-            "Checkpoint",
-            &mut self.form.checkpoint,
-            &["pth"],
-            false,
-        );
+        path_picker(ui, "RVC model", &mut self.form.checkpoint, &["pth"], false);
         path_picker(
             ui,
             "Retrieval index",
@@ -159,9 +190,12 @@ impl InferenceApp {
             false,
         );
         ui.label(
-            egui::RichText::new("The index is optional; a zero retrieval rate bypasses it.")
-                .small()
-                .weak(),
+            egui::RichText::new(concat!(
+                "The production path loads .pth tensors directly into Candle and the ",
+                "optional IVF-Flat .index into a preallocated native search workspace."
+            ))
+            .small()
+            .weak(),
         );
     }
 
@@ -200,8 +234,7 @@ impl InferenceApp {
 
                 ui.label("Pitch shift");
                 ui.add(
-                    egui::Slider::new(&mut self.form.config.pitch_shift, -24..=24)
-                        .suffix(" st"),
+                    egui::Slider::new(&mut self.form.config.pitch_shift, -24..=24).suffix(" st"),
                 );
                 ui.end_row();
 
@@ -217,16 +250,12 @@ impl InferenceApp {
                 ui.end_row();
 
                 ui.label("Chunk");
-                ui.add(
-                    egui::Slider::new(&mut self.form.config.chunk_ms, 20..=1_000)
-                        .suffix(" ms"),
-                );
+                ui.add(egui::Slider::new(&mut self.form.config.chunk_ms, 20..=1_000).suffix(" ms"));
                 ui.end_row();
 
                 ui.label("Crossfade");
                 ui.add(
-                    egui::Slider::new(&mut self.form.config.crossfade_ms, 0..=250)
-                        .suffix(" ms"),
+                    egui::Slider::new(&mut self.form.config.crossfade_ms, 0..=250).suffix(" ms"),
                 );
                 ui.end_row();
             });
@@ -263,37 +292,70 @@ impl InferenceApp {
             if ui.button("Backend doctor").clicked() {
                 self.sync_engine();
                 match self.engine.doctor() {
-                    Ok(values) => self.push_message(format!(
-                        "Backend tensor round trip passed: {values:?}"
+                    Ok(values) => {
+                        self.push_message(format!("Backend tensor round trip passed: {values:?}"))
+                    }
+                    Err(error) => self.push_message(error.to_string()),
+                }
+            }
+
+            if ui.button("Prepare native model").clicked() {
+                self.sync_engine();
+                match self.engine.prepare_native() {
+                    Ok(report) => self.push_message(format!(
+                        "Prepared {} tensors, {}-D, {} Hz, {} speaker(s), index={:?}",
+                        report.tensor_count,
+                        report.feature_dimension,
+                        report.sample_rate,
+                        report.speaker_count,
+                        report.index_vectors
                     )),
                     Err(error) => self.push_message(error.to_string()),
                 }
             }
 
+            let running = self.worker.is_some();
             let run = ui.add_enabled(
-                validation.is_ok(),
-                egui::Button::new("Start offline conversion"),
+                false,
+                egui::Button::new(if running {
+                    "Converting…"
+                } else {
+                    "Start offline conversion"
+                }),
             );
             if run.clicked() {
                 self.sync_engine();
                 let job = self.offline_job();
-                match self.engine.start_offline(&job) {
-                    Ok(()) => self.push_message("Offline conversion started.".to_owned()),
+                match self.engine.begin_offline(&job) {
+                    Ok(task) => {
+                        let (sender, receiver) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            let result = task.run().map_err(|error| error.to_string());
+                            let _ = sender.send(result);
+                        });
+                        self.worker = Some(receiver);
+                        self.push_message(
+                            "Offline conversion started in the background.".to_owned(),
+                        );
+                    }
                     Err(error) => self.push_message(error.to_string()),
                 }
+            }
+            if running {
+                ui.spinner();
             }
         });
     }
 
     fn realtime_section(&mut self, ui: &mut egui::Ui) {
         ui.heading("Real-time microphone");
-        ui.label("This mode is intentionally gated until offline waveform parity passes.");
+        ui.label("Native generator forward must pass waveform parity before device streaming is enabled.");
         ui.add_enabled(false, egui::Button::new("Start real-time conversion"));
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new(concat!(
-                "Planned: CPAL device selection, bounded SPSC buffers, ",
-                "a dedicated inference worker, and measured end-to-end latency."
+                "Implemented foundation: direct checkpoint loading, in-memory index retrieval, ",
+                "and allocation-free SOLA. Next: Candle generator, ContentVec/F0, then CPAL worker."
             ))
             .weak(),
         );
@@ -319,6 +381,10 @@ impl InferenceApp {
 
 impl eframe::App for InferenceApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_worker();
+        if self.worker.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             self.top_bar(ui);
             ui.separator();
@@ -346,13 +412,7 @@ impl eframe::App for InferenceApp {
     }
 }
 
-fn path_picker(
-    ui: &mut egui::Ui,
-    label: &str,
-    path: &mut String,
-    extensions: &[&str],
-    save: bool,
-) {
+fn path_picker(ui: &mut egui::Ui, label: &str, path: &mut String, extensions: &[&str], save: bool) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.add(egui::TextEdit::singleline(path).desired_width(260.0));
