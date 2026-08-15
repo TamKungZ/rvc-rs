@@ -1,98 +1,106 @@
 # rvc-rs
 
-Native Rust building blocks and applications for Retrieval-based Voice
-Conversion (RVC), without requiring Python or PyTorch at runtime.
+Native Rust implementation of Retrieval-based Voice Conversion focused on
+direct RVC `.pth` checkpoints, FAISS `.index` retrieval, and real-time audio.
+Python/PyTorch behavior is the compatibility reference, not a runtime
+dependency.
 
-The project uses [`pthrs`](https://github.com/TamKungZ/pthrs) for exported
-PyTorch checkpoints and FAISS IVF-Flat retrieval indexes, Candle for the first
-native inference backend, and egui/eframe for the desktop application.
+## Direction
 
-> [!IMPORTANT]
-> This is a carefully gated implementation foundation, not a working voice
-> converter yet. The desktop app and CLI are functional, but generator execution
-> remains locked until deterministic Rust output matches a trusted PyTorch
-> reference.
+The production path is:
+
+```text
+microphone -> rolling 16 kHz context -> ContentVec + F0
+           -> native .index retrieval blend
+           -> Candle generator loaded directly from .pth
+           -> SOLA/crossfade -> output device
+```
+
+The workspace no longer depends on `vc-rs`, `vc-core`, or ONNX Runtime. The old
+ONNX experiment is excluded from the workspace under `crates/rvc-rs-onnx` as a
+future optional adapter and is not part of the native build.
+
+## Current native checkpoint (0.3.0)
+
+Implemented and tested:
+
+- safe ZIP-based PyTorch `.pth` parsing through `pthrs`;
+- extraction and validation of RVC version, sample rate, F0 flag, speaker count,
+  feature dimension, and architecture configuration;
+- eager transfer of every generator weight to the selected Candle device;
+- pure-Rust FAISS `IndexIVFFlat` loading and dimension validation;
+- preallocated nearest-neighbor retrieval blending with no per-frame heap
+  allocation;
+- MMVC-style fixed rolling buffers and 128-sample conversion alignment;
+- allocation-free normalized-correlation SOLA selection and raised-cosine
+  crossfade;
+- CPU/CUDA/Metal device selection boundaries.
+
+Still required before audio can be converted:
+
+- Candle forward pass for the RVC synthesizer;
+- native ContentVec/HuBERT inference;
+- native F0 extraction (RMVPE first);
+- inference worker and CPAL device streams;
+- numerical and waveform parity against the Python reference.
+
+The program returns an explicit error instead of passthrough or fake output
+while those stages are incomplete.
+
+## Inspect and prepare a real model
+
+Build the CLI:
+
+```bash
+cargo build --release -p rvc-rs-cli
+```
+
+Load a `.pth`, decode all tensors into Candle, and optionally load its index:
+
+```bash
+cargo run -p rvc-rs-cli -- prepare-native voice.pth voice.index cpu
+```
+
+Use `-` when no index is available:
+
+```bash
+cargo run -p rvc-rs-cli -- prepare-native voice.pth - auto
+```
+
+This command is the current real-checkpoint gate. It fails on malformed or
+unsupported checkpoints, incompatible index dimensions, missing tensors, and
+unavailable devices.
 
 ## Workspace
 
-| Package | Type | Responsibility |
-|---|---|---|
-| `rvc-rs-core` | library | Backend-independent model specs, inputs, validation, and inference traits |
-| `rvc-rs-candle` | library | Candle devices, `pthrs` weight boundary, and the RVC model implementation |
-| `rvc-rs-dsp` | library | Allocation-free channel mixing, meters, and chunk-boundary crossfades |
-| `rvc-rs-audio` | library | Platform-independent audio device and stream contracts |
-| `rvc-rs-engine` | library | Shared settings, jobs, validation, state, and future inference worker |
-| `rvc-rs-cli` | application | Headless validation and backend diagnostics |
-| `rvc-rs-inference` | application | egui desktop application for offline and future real-time conversion |
+| Package | Responsibility |
+|---|---|
+| `rvc-rs-core` | Model contracts and MMVC-compatible streaming geometry |
+| `rvc-rs-candle` | Direct `.pth` loading, Candle tensors, and native retrieval |
+| `rvc-rs-dsp` | Rolling buffers, SOLA, crossfade, meters, and channel mixing |
+| `rvc-rs-audio` | File audio I/O and future device-format utilities |
+| `rvc-rs-engine` | Native model preparation and pipeline lifecycle |
+| `rvc-rs-cli` | Model preparation, validation, and diagnostics |
+| `rvc-rs-inference` | Non-critical development UI |
 
-The GUI and CLI call the same engine. Model mathematics never belongs in a
-front end.
-
-## Build
+## Validation
 
 ```bash
-cargo check --workspace
-cargo test --workspace --all-targets
+cargo fmt --all -- --check
+cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
 ```
 
-Launch the desktop application:
+End-to-end parity requires a redistributable or user-supplied RVC checkpoint,
+index, ContentVec/RMVPE weights, and recorded Python reference tensors.
 
-```bash
-cargo run -p rvc-rs-inference
-```
+## References
 
-Run backend diagnostics:
-
-```bash
-cargo run -p rvc-rs-cli -- doctor cpu
-```
-
-Optional acceleration:
-
-```bash
-cargo run -p rvc-rs-inference --features cuda
-cargo run -p rvc-rs-inference --features metal
-```
-
-CUDA requires a compatible CUDA development environment. Metal is available on
-supported Apple platforms.
-
-## First working milestone
-
-Given one fixed v2/40k/F0 checkpoint and fixed generator-ready tensors:
-
-1. load every required weight from `.pth` through `pthrs 0.2.0`;
-2. construct the generator with Candle;
-3. execute a deterministic CPU `f32` forward pass;
-4. produce a mono waveform;
-5. match recorded PyTorch intermediate outputs and waveform within a documented
-   tolerance.
-
-Only then does the project add ContentVec/HuBERT, F0 extraction, retrieval
-blending, file conversion, and real-time audio.
-
-## Design principles
-
-- No Python or PyTorch runtime dependency.
-- Offline numerical correctness before microphone streaming.
-- Explicit errors instead of placeholder audio.
-- Caller-owned reusable buffers on real-time paths.
-- Audio callbacks never run inference or perform file I/O.
-- CPU is the correctness baseline; accelerators are validated against it.
-- Model and fixture licensing is respected; large weights are not committed.
-
-## Documentation
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Workspace structure](docs/WORKSPACE.md)
-- [Implementation roadmap](docs/ROADMAP.md)
-- [Reference testing](docs/REFERENCE_TESTING.md)
-- [Desktop application](docs/GUI.md)
-- [Handoff for a new chat](docs/HANDOFF.md)
-- [Codex project rules](AGENTS.md)
+- [RVC WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
+- [MMVCServerSIO / voice-changer](https://github.com/w-okada/voice-changer)
+- [vc-rs](https://github.com/shirohata/vc-rs) — optional adapter/reference only
 
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
-

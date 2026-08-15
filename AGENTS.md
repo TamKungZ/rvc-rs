@@ -5,6 +5,10 @@ implementation changes.
 
 ## Current goal
 
+The default build must stand on direct `.pth`/`.index` support. Do not add
+`vc-rs`, `vc-core`, ONNX Runtime, Python, PyTorch, libtorch, or FAISS as a core
+runtime dependency; alternative runtimes belong in detached adapter crates.
+
 ```text
 fixed content + pitch + speaker tensors
 -> weights loaded from .pth by pthrs 0.2.0
@@ -41,4 +45,3 @@ cargo doc --workspace --no-deps
 
 Follow `docs/ROADMAP.md` in order unless a concrete failing test proves the
 order must change.
-
