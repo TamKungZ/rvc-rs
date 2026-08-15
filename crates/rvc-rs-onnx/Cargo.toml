@@ -1,0 +1,20 @@
+[package]
+name = "rvc-rs-vc-rs-adapter"
+version = "0.1.0"
+edition = "2021"
+authors = ["TamKungZ_ <dev@tamkungz.me>"]
+repository = "https://github.com/TamKungZ/rvc-rs"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = []
+cuda = ["vc-core/cuda"]
+
+[dependencies]
+ort = "=2.0.0-rc.12"
+thiserror = "2"
+vc-core = { git = "https://github.com/shirohata/vc-rs.git", rev = "71a448d6d634eeaa80add89f77ddf59e4ee1a2f8", features = ["ort"] }
+
+[lib]
+path = "src/lib.rs"
