@@ -19,7 +19,7 @@ and perform file I/O. The real-time loop may not.
 ```text
 input callback -> bounded SPSC queue -> inference worker
 inference worker:
-  rolling audio -> 16 kHz -> ContentVec + RMVPE
+  rolling audio -> 16 kHz -> ContentVec + native F0
   features -> index blend -> Candle RVC generator
   waveform -> SOLA/crossfade -> output queue
 output callback <- bounded SPSC queue
@@ -42,19 +42,13 @@ retrieval, logging, file I/O, and allocation stay on the inference worker.
 These are behavioral requirements. Python tensor layouts and padding rules are
 recorded as parity fixtures before each Candle block is accepted.
 
-## Model implementation order
+## Model implementation status
 
-1. bind every checkpoint tensor by exact state-dictionary name;
-2. speaker/pitch embeddings and content encoder;
-3. residual coupling flow;
-4. NSF source path;
-5. HiFi-GAN decoder;
-6. v2/40k/F0 top-level inference;
-7. native ContentVec and RMVPE;
-8. streaming worker and CPAL devices.
+Items 1–6 and native v2 ContentVec are implemented. The next work is a
+resident chunked pipeline, CPAL devices, then RMVPE and numerical parity.
 
 ## Adapter policy
 
-Alternative runtimes belong outside the core dependency graph. The detached
-`crates/rvc-rs-onnx` prototype may later be renamed and published as a `vc-rs`
-adapter. Native types must not depend on it.
+Alternative runtimes belong outside the core dependency graph. A future
+adapter should be published as a separate crate; native types must not depend
+on it.

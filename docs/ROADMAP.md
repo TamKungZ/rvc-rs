@@ -4,7 +4,7 @@ The completion target is MMVCServerSIO-compatible real-time RVC behavior with
 no Python, PyTorch, libtorch, FAISS, vc-rs, vc-core, or ONNX Runtime dependency
 in the default build.
 
-## 1. Model data — active
+## 1. Model data — working
 
 - [x] Safe ZIP PyTorch checkpoint reader
 - [x] RVC metadata/config extraction
@@ -13,19 +13,19 @@ in the default build.
 - [x] Pure-Rust FAISS IVF-Flat reader
 - [x] In-memory, preallocated index search and blending
 - [ ] Complete required/unexpected weight manifest for every supported variant
-- [ ] Real v2/40k/F0 checkpoint preparation fixture
+- [x] Real v2/32k/F0 checkpoint and matching index fixture
 
 Exit: a real checkpoint and index load with every generator weight accounted
 for exactly once.
 
-## 2. Generator parity — next critical path
+## 2. Generator inference — working
 
-- [ ] Speaker and pitch embeddings
-- [ ] Text/content encoder
-- [ ] Residual coupling flow
-- [ ] NSF sine source
-- [ ] HiFi-GAN upsampling decoder and residual blocks
-- [ ] v2/40k/F0 top-level forward
+- [x] Speaker and pitch embeddings
+- [x] Text/content encoder
+- [x] Residual coupling flow
+- [x] NSF sine source
+- [x] HiFi-GAN upsampling decoder and residual blocks
+- [x] v2 F0 top-level forward (validated on TITAN 32k)
 - [ ] Intermediate tensor comparisons against Python
 - [ ] Final waveform tolerance and finite-value checks
 
@@ -34,13 +34,14 @@ Exit: generator-ready tensors produce the same waveform as the Python
 
 ## 3. Native front end
 
-- [ ] ContentVec/HuBERT architecture and checkpoint adapter
-- [ ] v2 layer-12 features
+- [x] ContentVec/HuBERT architecture and checkpoint adapter
+- [x] v2 layer-12 features
 - [ ] v1 layer-9 + final projection
 - [ ] RMVPE architecture and checkpoint adapter
-- [ ] F0 quantization, transpose, unvoiced interpolation, and protect mask
+- [x] Lightweight autocorrelation F0, transpose, and quantization
 - [x] Native `.index` retrieval blend
-- [ ] Full raw-audio-to-generator-input parity
+- [x] Functional WAV-to-generator-input pipeline
+- [ ] RMVPE/protect and Python numerical parity
 
 ## 4. Real-time execution
 
@@ -65,6 +66,5 @@ Exit: generator-ready tensors produce the same waveform as the Python
 
 ## Optional adapters
 
-The previous `vc-rs`/ONNX code is excluded from the workspace. It may become an
-explicit adapter after the native pipeline stands on its own; it cannot be the
-default implementation or define the core interfaces.
+No adapter implementation is kept in this repository. A future `vc-rs`
+adapter can be a separate crate after the native pipeline stands on its own.
