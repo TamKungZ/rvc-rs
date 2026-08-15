@@ -3,6 +3,14 @@
 
 //! Candle backend and the integration boundary between `pthrs` tensors and RVC.
 
+mod content;
+mod feature_extractor;
+mod hubert;
+mod hubert_encoder;
+mod rvc;
+
+pub use content::{ContentEncoder, ContentError, RvcVersion};
+
 use candle_core::{Device, Tensor};
 use rvc_rs_core::{ComputeDevice, GeneratorInput, InputError, ModelSpec, VoiceGenerator};
 use std::collections::BTreeMap;
@@ -99,6 +107,15 @@ impl NativeCheckpoint {
     /// Iterates every loaded state-dictionary name in stable order.
     pub fn weight_names(&self) -> impl Iterator<Item = &str> {
         self.weights.keys().map(String::as_str)
+    }
+
+    /// Candle device holding the decoded tensors.
+    pub fn device(&self) -> &Device {
+        self.weights
+            .values()
+            .next()
+            .map(Tensor::device)
+            .unwrap_or(&Device::Cpu)
     }
 }
 
@@ -312,6 +329,7 @@ pub struct CandleGenerator {
     spec: ModelSpec,
     device: Device,
     checkpoint: Option<NativeCheckpoint>,
+    model: Option<rvc::RvcSynthesizer>,
 }
 
 impl CandleGenerator {
@@ -322,6 +340,7 @@ impl CandleGenerator {
             spec,
             device: resolve_device(request)?,
             checkpoint: None,
+            model: None,
         })
     }
 
@@ -329,10 +348,12 @@ impl CandleGenerator {
     pub fn load(path: impl AsRef<Path>, request: ComputeDevice) -> Result<Self, InferenceError> {
         let device = resolve_device(request)?;
         let checkpoint = NativeCheckpoint::load(path, &device)?;
+        let model = rvc::RvcSynthesizer::load(&checkpoint)?;
         Ok(Self {
             spec: checkpoint.spec(),
             device,
             checkpoint: Some(checkpoint),
+            model: Some(model),
         })
     }
 
@@ -356,7 +377,10 @@ impl VoiceGenerator for CandleGenerator {
 
     fn synthesize(&mut self, input: &GeneratorInput<'_>) -> Result<Vec<f32>, Self::Error> {
         input.validate(self.spec)?;
-        Err(InferenceError::ModelNotImplemented)
+        self.model
+            .as_ref()
+            .ok_or(InferenceError::ModelNotImplemented)?
+            .forward(input)
     }
 }
 
@@ -407,6 +431,9 @@ pub enum InferenceError {
     /// Generator output rate is outside the currently mapped RVC variants.
     #[error("unsupported RVC sample rate: {0}")]
     UnsupportedSampleRate(u32),
+    /// The checkpoint represents an RVC variant not yet supported by the native path.
+    #[error("unsupported RVC model: {0}")]
+    UnsupportedModel(String),
     /// A required state-dictionary tensor was not loaded.
     #[error("checkpoint weight is missing: {0}")]
     MissingWeight(String),
@@ -429,8 +456,8 @@ pub enum InferenceError {
         /// Width stored in the FAISS index.
         actual: usize,
     },
-    /// The RVC architecture has not been implemented in this scaffold yet.
-    #[error("RVC generator forward pass is not implemented; see docs/ROADMAP.md")]
+    /// An uninitialized generator shell was called.
+    #[error("RVC generator is not initialized")]
     ModelNotImplemented,
 }
 
