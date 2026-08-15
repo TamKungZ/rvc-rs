@@ -3,42 +3,14 @@
 `rvc-rs` is Apache-2.0 licensed. It uses third-party dependencies under their
 respective licenses.
 
-## vc-rs / vc-core
+## blazen-audio-vc ContentVec portions
 
-The excluded optional adapter prototype under `crates/rvc-rs-onnx` depends on `vc-core` from
-[`shirohata/vc-rs`](https://github.com/shirohata/vc-rs), pinned to commit
-`71a448d6d634eeaa80add89f77ddf59e4ee1a2f8` (release 0.4.0). It is not a
-dependency of the default workspace or native runtime.
+The ContentVec implementation files identified in `LICENSES/MPL-2.0.txt`
+contain portions adapted from `blazen-audio-vc` 0.7.0 and remain available
+under Mozilla Public License 2.0. The complete license and affected-file list
+are included there.
 
-```text
-MIT License
-
-Copyright (c) 2026 shirohata
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## ONNX Runtime and model files
-
-The excluded adapter can use ONNX Runtime, distributed by Microsoft under the
-MIT License. Its complete license and third-party notices are included by the
-runtime distribution. The native workspace does not depend on it.
+## Model files
 
 RVC, ContentVec, RMVPE, and retrieval-index files are user-supplied data. They
 are not part of this source tree and are not covered by the `rvc-rs` license.
