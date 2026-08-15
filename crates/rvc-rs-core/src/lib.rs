@@ -252,6 +252,105 @@ pub trait VoiceGenerator {
     fn synthesize(&mut self, input: &GeneratorInput<'_>) -> Result<Vec<f32>, Self::Error>;
 }
 
+/// Fixed real-time buffer geometry derived from MMVCServerSIO's RVC path.
+///
+/// Generator input contains the requested output block, crossfade overlap,
+/// SOLA search window, and extra historical context. The total is rounded up
+/// to 128 output-rate samples because common RVC decoders otherwise truncate
+/// at their hop boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamingGeometry {
+    /// Generator/output sample rate.
+    pub sample_rate: u32,
+    /// Samples returned to the audio device on each inference cycle.
+    pub block_samples: usize,
+    /// Samples blended between consecutive generated blocks.
+    pub crossfade_samples: usize,
+    /// Candidate samples searched by SOLA.
+    pub sola_search_samples: usize,
+    /// Historical context included before the audible region.
+    pub extra_samples: usize,
+    /// Aligned generator context length.
+    pub convert_samples: usize,
+    /// Generator result retained before SOLA selection.
+    pub output_samples: usize,
+    /// 100 Hz ContentVec/F0 frames retained with the audio context.
+    pub feature_frames: usize,
+}
+
+impl StreamingGeometry {
+    /// Creates checked, fixed geometry before the real-time worker starts.
+    pub fn new(
+        sample_rate: u32,
+        block_samples: usize,
+        crossfade_samples: usize,
+        sola_search_samples: usize,
+        extra_samples: usize,
+    ) -> Result<Self, StreamingError> {
+        if sample_rate == 0 {
+            return Err(StreamingError::ZeroSampleRate);
+        }
+        if block_samples == 0 {
+            return Err(StreamingError::ZeroBlock);
+        }
+        if crossfade_samples > block_samples {
+            return Err(StreamingError::CrossfadeLargerThanBlock);
+        }
+        let raw_convert = block_samples
+            .checked_add(crossfade_samples)
+            .and_then(|value| value.checked_add(sola_search_samples))
+            .and_then(|value| value.checked_add(extra_samples))
+            .ok_or(StreamingError::LengthOverflow)?;
+        let convert_samples = raw_convert
+            .checked_add(127)
+            .ok_or(StreamingError::LengthOverflow)?
+            / 128
+            * 128;
+        let output_samples = convert_samples
+            .checked_sub(extra_samples)
+            .ok_or(StreamingError::LengthOverflow)?;
+        let feature_frames = convert_samples
+            .checked_mul(100)
+            .ok_or(StreamingError::LengthOverflow)?
+            / sample_rate as usize;
+        Ok(Self {
+            sample_rate,
+            block_samples,
+            crossfade_samples,
+            sola_search_samples,
+            extra_samples,
+            convert_samples,
+            output_samples,
+            feature_frames,
+        })
+    }
+
+    /// Converts output-rate samples to the 100 Hz RVC feature grid.
+    pub fn feature_frames_for(self, samples: usize) -> Result<usize, StreamingError> {
+        samples
+            .checked_mul(100)
+            .ok_or(StreamingError::LengthOverflow)
+            .map(|value| value / self.sample_rate as usize)
+    }
+}
+
+/// Invalid or overflowing real-time buffer geometry.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum StreamingError {
+    /// Generator sample rate cannot be zero.
+    #[error("streaming sample rate is zero")]
+    ZeroSampleRate,
+    /// Audio callback block cannot be empty.
+    #[error("streaming block is empty")]
+    ZeroBlock,
+    /// Crossfade cannot exceed one callback block.
+    #[error("crossfade is larger than the output block")]
+    CrossfadeLargerThanBlock,
+    /// Buffer size arithmetic exceeded `usize`.
+    #[error("streaming buffer length overflow")]
+    LengthOverflow,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +362,15 @@ mod tests {
             uses_f0: true,
             speaker_count: 1,
         }
+    }
+
+    #[test]
+    fn streaming_geometry_matches_mmvc_alignment() {
+        let geometry = StreamingGeometry::new(40_000, 4_000, 400, 480, 8_000).unwrap();
+        assert_eq!(geometry.convert_samples, 12_928);
+        assert_eq!(geometry.output_samples, 4_928);
+        assert_eq!(geometry.feature_frames, 32);
+        assert_eq!(geometry.feature_frames_for(4_000).unwrap(), 10);
     }
 
     #[test]
@@ -329,4 +437,3 @@ mod tests {
         assert_eq!(input.validate(v2_f0_spec()), Err(InputError::MissingPitch));
     }
 }
-
