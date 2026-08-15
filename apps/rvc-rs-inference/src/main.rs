@@ -62,7 +62,7 @@ impl InferenceApp {
             form,
             messages: vec![
                 "Native direction: direct RVC .pth and optional FAISS .index.".to_owned(),
-                "Checkpoint/index preparation works; generator forward and real-time worker are under construction."
+                "RVC v2 offline conversion is available; real-time audio is the next milestone."
                     .to_owned(),
             ],
             worker: None,
@@ -182,6 +182,7 @@ impl InferenceApp {
     fn model_section(&mut self, ui: &mut egui::Ui) {
         ui.heading("Voice model");
         path_picker(ui, "RVC model", &mut self.form.checkpoint, &["pth"], false);
+        path_picker(ui, "ContentVec", &mut self.form.contentvec, &["pt"], false);
         path_picker(
             ui,
             "Retrieval index",
@@ -267,7 +268,7 @@ impl InferenceApp {
             ui,
             "Input audio",
             &mut self.form.input_audio,
-            &["wav", "flac", "mp3"],
+            &["wav"],
             false,
         );
         path_picker(
@@ -316,7 +317,7 @@ impl InferenceApp {
 
             let running = self.worker.is_some();
             let run = ui.add_enabled(
-                false,
+                validation.is_ok() && !running,
                 egui::Button::new(if running {
                     "Converting…"
                 } else {
@@ -349,13 +350,13 @@ impl InferenceApp {
 
     fn realtime_section(&mut self, ui: &mut egui::Ui) {
         ui.heading("Real-time microphone");
-        ui.label("Native generator forward must pass waveform parity before device streaming is enabled.");
+        ui.label("The native model path is active; CPAL capture/playback integration is not enabled yet.");
         ui.add_enabled(false, egui::Button::new("Start real-time conversion"));
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new(concat!(
-                "Implemented foundation: direct checkpoint loading, in-memory index retrieval, ",
-                "and allocation-free SOLA. Next: Candle generator, ContentVec/F0, then CPAL worker."
+                "Implemented: direct checkpoint loading, ContentVec, DSP F0, in-memory retrieval, ",
+                "native RVC synthesis, and allocation-free SOLA. Next: CPAL worker."
             ))
             .weak(),
         );
