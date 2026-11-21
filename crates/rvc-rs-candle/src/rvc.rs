@@ -456,12 +456,13 @@ impl WaveNet {
         let cond = w.norm_conv(&format!("{p}.cond_layer"), Conv1dConfig::default())?;
         let mut input = Vec::with_capacity(3);
         let mut residual = Vec::with_capacity(3);
+        // RVC builds the flow WaveNet with kernel 5 and dilation_rate 1, so
+        // every layer has dilation 1 rather than the usual 2^i schedule.
         for i in 0..3 {
             input.push(w.norm_conv(
                 &format!("{p}.in_layers.{i}"),
                 Conv1dConfig {
-                    padding: (5 * (1usize << i) - (1usize << i)) / 2,
-                    dilation: 1usize << i,
+                    padding: 2,
                     ..Default::default()
                 },
             )?);
