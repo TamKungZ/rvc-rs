@@ -363,3 +363,39 @@ impl ContentEncoder {
         })
     }
 }
+
+#[cfg(test)]
+mod parity {
+    use super::*;
+    use crate::rvc::parity::{assert_close, read_npy, workspace_root};
+
+    #[test]
+    fn layer12_matches_torchaudio_hubert_base() {
+        let reference = workspace_root().join(".dev/reference/hubert");
+        let Some(cache) = std::env::var_os("LOCALAPPDATA")
+            .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
+            .map(|base| Path::new(&base).join("rvc-rs/models/hubert_base.pt"))
+        else {
+            return;
+        };
+        if !cache.exists() || !reference.join("layer12.npy").exists() {
+            eprintln!("skipping HuBERT parity: fixture missing");
+            return;
+        }
+        let encoder = ContentEncoder::load(&cache, &Device::Cpu, RvcVersion::V2).unwrap();
+        let audio = read_npy(&reference.join("audio.npy")).f32;
+        let actual = encoder
+            .encode(&audio)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert_close(
+            "hubert.layer12",
+            &actual,
+            &read_npy(&reference.join("layer12.npy")).f32,
+            2e-3,
+        );
+    }
+}
