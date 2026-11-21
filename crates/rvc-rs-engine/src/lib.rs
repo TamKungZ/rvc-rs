@@ -4,17 +4,18 @@
 //! Shared orchestration state for the GUI, CLI, and future streaming worker.
 
 mod assets;
+mod pipeline;
 
-pub use assets::{hubert_cache_path, hubert_is_cached, hubert_is_ready, AssetError};
+pub use assets::{
+    hubert_cache_path, hubert_is_cached, hubert_is_ready, AssetError, ManagedAsset, HUBERT, RMVPE,
+};
 
-use candle_core::IndexOp;
 use rvc_rs_audio::{decode_audio_mono, write_wav_mono};
 use rvc_rs_candle::{
-    backend_smoke_test, resolve_device, CandleGenerator, ContentEncoder, RetrievalIndex, RvcVersion,
+    backend_smoke_test, resolve_device, CandleGenerator, ContentEncoder, RetrievalIndex, Rmvpe,
+    RvcVersion,
 };
-use rvc_rs_core::{
-    ComputeDevice, FeatureMatrix, GeneratorInput, ModelVersion, PitchTrack, VoiceGenerator,
-};
+use rvc_rs_core::{ComputeDevice, ModelVersion, VoiceGenerator};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -71,18 +72,10 @@ impl QualityPreset {
             f0_filter_radius,
             rms_mix_rate,
         ) = match self {
-            Self::Balanced => {
-                (0.60, 8, 2, 0.33, 0.50, 50.0, 1_100.0, 0.15, 3, 0.25)
-            }
-            Self::CleanSpeech => {
-                (0.35, 8, 2, 0.15, 0.35, 65.0, 650.0, 0.14, 5, 0.10)
-            }
-            Self::Singing => {
-                (0.65, 12, 4, 0.30, 0.50, 45.0, 1_400.0, 0.12, 2, 0.25)
-            }
-            Self::StrongIdentity => {
-                (0.85, 16, 4, 0.40, 0.60, 50.0, 1_100.0, 0.16, 3, 0.40)
-            }
+            Self::Balanced => (0.75, 8, 1, 0.33, 0.666_66, 50.0, 1_100.0, 0.15, 3, 0.25),
+            Self::CleanSpeech => (0.35, 8, 2, 0.15, 0.35, 65.0, 650.0, 0.14, 5, 0.10),
+            Self::Singing => (0.65, 12, 4, 0.30, 0.666_66, 45.0, 1_400.0, 0.12, 2, 0.25),
+            Self::StrongIdentity => (0.85, 16, 4, 0.40, 0.60, 50.0, 1_100.0, 0.16, 3, 0.40),
         };
         config.retrieval_rate = retrieval_rate;
         config.retrieval_neighbors = retrieval_neighbors;
@@ -95,6 +88,35 @@ impl QualityPreset {
         config.f0_filter_radius = f0_filter_radius;
         config.rms_mix_rate = rms_mix_rate;
         config.output_gain_db = 0.0;
+    }
+}
+
+/// Pitch extractor used for F0 checkpoints.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum F0Method {
+    /// Native RMVPE network, the RVC WebUI default. Uses a managed model.
+    #[default]
+    Rmvpe,
+    /// Lightweight built-in YIN estimator.
+    Yin,
+}
+
+impl F0Method {
+    /// Stable command-line name.
+    pub const fn cli_name(self) -> &'static str {
+        match self {
+            Self::Rmvpe => "rmvpe",
+            Self::Yin => "yin",
+        }
+    }
+
+    /// Parses a stable command-line name.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "rmvpe" => Some(Self::Rmvpe),
+            "yin" => Some(Self::Yin),
+            _ => None,
+        }
     }
 }
 
@@ -116,13 +138,15 @@ pub struct EngineConfig {
     pub protect_rate: f32,
     /// Standard deviation multiplier used when sampling the generator latent.
     pub noise_scale: f32,
+    /// Pitch extractor.
+    pub f0_method: F0Method,
     /// Lowest F0 considered by the built-in YIN extractor.
     pub f0_min_hz: f32,
     /// Highest F0 considered by the built-in YIN extractor.
     pub f0_max_hz: f32,
     /// YIN cumulative-mean normalized-difference acceptance threshold.
     pub f0_yin_threshold: f32,
-    /// Radius of the voiced-frame median smoother; zero disables it.
+    /// Radius of the YIN voiced-frame median smoother; zero disables it.
     pub f0_filter_radius: usize,
     /// Output-envelope share: zero follows the input RMS, one keeps generated RMS.
     pub rms_mix_rate: f32,
@@ -145,7 +169,8 @@ impl Default for EngineConfig {
             retrieval_neighbors: 8,
             retrieval_nprobe: 2,
             protect_rate: 0.33,
-            noise_scale: 0.50,
+            noise_scale: 0.666_66,
+            f0_method: F0Method::Rmvpe,
             f0_min_hz: 50.0,
             f0_max_hz: 1_100.0,
             f0_yin_threshold: 0.15,
@@ -197,9 +222,7 @@ impl EngineConfig {
                 "f0_min_hz must be between 40 and 300 Hz",
             ));
         }
-        if !(300.0..=1_600.0).contains(&self.f0_max_hz)
-            || self.f0_max_hz <= self.f0_min_hz
-        {
+        if !(300.0..=1_600.0).contains(&self.f0_max_hz) || self.f0_max_hz <= self.f0_min_hz {
             return Err(EngineError::InvalidConfig(
                 "f0_max_hz must be between 300 and 1600 Hz and greater than f0_min_hz",
             ));
@@ -336,119 +359,79 @@ impl OfflineTask {
     pub fn run(self) -> Result<OfflineReport, EngineError> {
         let started = Instant::now();
         let decoded = decode_audio_mono(&self.job.input_audio)?;
-        let samples_16k = bandlimited_resample(&decoded.samples, decoded.sample_rate, 16_000);
         let mut generator = CandleGenerator::load(&self.model.checkpoint, self.config.device)?;
         let spec = generator.spec();
-        let contentvec_path = assets::ensure_hubert()?;
         if spec.version != ModelVersion::V2 {
             return Err(EngineError::FeatureUnavailable(
                 "the current native ContentVec path supports RVC v2 checkpoints only",
             ));
         }
-        let encoder = ContentEncoder::load(&contentvec_path, generator.device(), RvcVersion::V2)?;
-        let inference_started = Instant::now();
-        let encoded = encoder.encode(&samples_16k)?;
-        let (_, content_frames, dimensions) = encoded.dims3()?;
-        let mut base_features = encoded.i(0)?.flatten_all()?.to_vec1::<f32>()?;
-        let protected_features = (self.config.retrieval_rate > 0.0
-            && self.config.protect_rate < 0.5)
-            .then(|| base_features.clone());
-
-        if self.config.retrieval_rate > 0.0 {
-            let index_path = self
+        let encoder = ContentEncoder::load(&HUBERT.ensure()?, generator.device(), RvcVersion::V2)?;
+        let rmvpe = match self.config.f0_method {
+            F0Method::Rmvpe => Some(Rmvpe::load(RMVPE.ensure()?, generator.device())?),
+            F0Method::Yin => None,
+        };
+        let mut index = if self.config.retrieval_rate > 0.0 {
+            let path = self
                 .model
                 .index
                 .as_ref()
                 .ok_or(EngineError::MissingPath("retrieval index"))?;
-            let mut index = RetrievalIndex::load(
-                index_path,
-                dimensions,
+            Some(RetrievalIndex::load(
+                path,
+                spec.feature_dimension(),
                 self.config.retrieval_neighbors,
-            )?;
-            index.blend_frames(
-                &mut base_features,
-                self.config.retrieval_rate,
-                self.config.retrieval_neighbors,
-                self.config.retrieval_nprobe,
-            )?;
-        }
+            )?)
+        } else {
+            None
+        };
 
-        let mut features =
-            upsample_features_nearest_2x(&base_features, content_frames, dimensions);
-        let protected_features = protected_features.map(|values| {
-            upsample_features_nearest_2x(&values, content_frames, dimensions)
-        });
-        let mut pitch = extract_pitch_yin(&samples_16k, &self.config);
-        smooth_voiced_pitch(&mut pitch, self.config.f0_filter_radius);
-        let frames = (features.len() / dimensions).min(pitch.len());
-        if frames == 0 {
+        let inference_started = Instant::now();
+        let mut audio = bandlimited_resample(&decoded.samples, decoded.sample_rate, 16_000);
+        pipeline::limit_input_peak(&mut audio);
+        let audio = pipeline::highpass_filtfilt(&audio);
+        if audio.len() < pipeline::WINDOW * 2 {
             return Err(EngineError::FeatureUnavailable(
                 "source audio is too short to produce inference frames",
             ));
         }
-        features.truncate(frames * dimensions);
-        let continuous: Vec<f32> = pitch.into_iter().take(frames).collect();
-        if let Some(original) = protected_features.as_deref() {
-            protect_unvoiced_features(
-                &mut features,
-                original,
-                &continuous,
-                dimensions,
-                self.config.protect_rate,
-            );
+        let mut output = pipeline::Converter {
+            generator: &mut generator,
+            encoder: &encoder,
+            rmvpe: rmvpe.as_ref(),
+            index: index.as_mut(),
+            config: &self.config,
         }
-        let coarse: Vec<i64> = continuous.iter().copied().map(pitch_to_coarse).collect();
-        let mut output = generator.synthesize(&GeneratorInput {
-            features: FeatureMatrix {
-                values: &features,
-                frames,
-                dimensions,
-            },
-            pitch: Some(PitchTrack {
-                coarse: &coarse,
-                continuous_hz: &continuous,
-            }),
-            speaker_id: self.config.speaker_id,
-            noise_scale: self.config.noise_scale,
-        })?;
+        .convert(&audio)?;
         let inference_time = inference_started.elapsed();
+
         let sample_rate = spec.sample_rate.hz();
-        if self.config.rms_mix_rate < 1.0 {
-            let source_at_output_rate = bandlimited_resample(
-                &decoded.samples,
-                decoded.sample_rate,
-                sample_rate,
-            );
-            match_rms_envelope(
-                &source_at_output_rate,
-                &mut output,
-                sample_rate,
-                self.config.rms_mix_rate,
-            );
-        }
+        pipeline::change_rms(
+            &audio,
+            pipeline::RATE,
+            &mut output,
+            sample_rate as usize,
+            self.config.rms_mix_rate,
+        );
+        pipeline::limit_output_peak(&mut output);
         apply_output_gain(&mut output, self.config.output_gain_db);
         write_wav_mono(&self.job.output_audio, &output, sample_rate)?;
         Ok(OfflineReport {
             output_audio: self.job.output_audio,
             samples: output.len(),
             sample_rate,
-            chunks: 1,
+            chunks: pipeline::split_points(&audio).len() + 1,
             elapsed: started.elapsed(),
             inference_time,
         })
     }
 }
 
-fn bandlimited_resample(
-    samples: &[f32],
-    source_rate: u32,
-    target_rate: u32,
-) -> Vec<f32> {
+fn bandlimited_resample(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     if samples.is_empty() || source_rate == target_rate {
         return samples.to_vec();
     }
-    let length =
-        (samples.len() as u64 * u64::from(target_rate) / u64::from(source_rate)) as usize;
+    let length = (samples.len() as u64 * u64::from(target_rate) / u64::from(source_rate)) as usize;
     let step = f64::from(source_rate) / f64::from(target_rate);
     let cutoff = (f64::from(target_rate) / f64::from(source_rate)).min(1.0) * 0.94;
     const RADIUS: isize = 16;
@@ -493,11 +476,7 @@ fn bandlimited_resample(
         .collect()
 }
 
-fn upsample_features_nearest_2x(
-    input: &[f32],
-    frames: usize,
-    dimensions: usize,
-) -> Vec<f32> {
+fn upsample_features_nearest_2x(input: &[f32], frames: usize, dimensions: usize) -> Vec<f32> {
     if frames == 0 {
         return Vec::new();
     }
@@ -543,12 +522,8 @@ fn extract_pitch_yin(samples: &[f32], config: &EngineConfig) -> Vec<f32> {
 
         let mean = slice.iter().copied().sum::<f32>() / slice.len() as f32;
         let denominator = (slice.len() - 1) as f32;
-        for (index, (&sample, destination)) in
-            slice.iter().zip(windowed.iter_mut()).enumerate()
-        {
-            let hann = 0.5
-                - 0.5
-                    * (2.0 * std::f32::consts::PI * index as f32 / denominator).cos();
+        for (index, (&sample, destination)) in slice.iter().zip(windowed.iter_mut()).enumerate() {
+            let hann = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * index as f32 / denominator).cos();
             *destination = (sample - mean) * hann;
         }
         let values = &windowed[..slice.len()];
@@ -664,55 +639,6 @@ fn protect_unvoiced_features(
                 *retrieved_value * protect_rate + original_value * (1.0 - protect_rate);
         }
     }
-}
-
-fn match_rms_envelope(source: &[f32], output: &mut [f32], sample_rate: u32, mix: f32) {
-    if source.is_empty() || output.is_empty() || mix >= 1.0 {
-        return;
-    }
-    let window = (sample_rate as usize / 50).max(1);
-    let hop = (sample_rate as usize / 100).max(1);
-    let source_energy = energy_prefix(source);
-    let output_energy = energy_prefix(output);
-    let points = output.len().div_ceil(hop) + 1;
-    let mut gains = Vec::with_capacity(points);
-    for point in 0..points {
-        let output_center = (point * hop).min(output.len().saturating_sub(1));
-        let source_center = if output.len() <= 1 {
-            0
-        } else {
-            output_center * source.len().saturating_sub(1) / output.len().saturating_sub(1)
-        };
-        let source_rms = local_rms(&source_energy, source_center, window, source.len());
-        let output_rms = local_rms(&output_energy, output_center, window, output.len());
-        let ratio = (source_rms + 1e-4) / (output_rms + 1e-4);
-        gains.push(ratio.powf(1.0 - mix).clamp(0.05, 10.0));
-    }
-    for (index, sample) in output.iter_mut().enumerate() {
-        let point = index / hop;
-        let fraction = (index % hop) as f32 / hop as f32;
-        let left = gains[point];
-        let right = gains[(point + 1).min(gains.len() - 1)];
-        *sample *= left + (right - left) * fraction;
-    }
-}
-
-fn energy_prefix(samples: &[f32]) -> Vec<f64> {
-    let mut prefix = Vec::with_capacity(samples.len() + 1);
-    prefix.push(0.0);
-    for &sample in samples {
-        prefix.push(prefix.last().copied().unwrap_or(0.0) + f64::from(sample * sample));
-    }
-    prefix
-}
-
-fn local_rms(prefix: &[f64], center: usize, window: usize, length: usize) -> f32 {
-    let start = center.saturating_sub(window / 2);
-    let end = (center + window / 2 + 1).min(length);
-    if end <= start {
-        return 0.0;
-    }
-    (((prefix[end] - prefix[start]) / (end - start) as f64).max(0.0).sqrt()) as f32
 }
 
 fn apply_output_gain(output: &mut [f32], gain_db: f32) {
@@ -881,7 +807,7 @@ impl Engine {
                     "the current managed ContentVec path supports RVC v2 checkpoints only",
                 ));
             }
-            let hubert_path = assets::ensure_hubert()?;
+            let hubert_path = HUBERT.ensure()?;
             let content_encoder =
                 ContentEncoder::load(&hubert_path, generator.device(), RvcVersion::V2)?;
             let retrieval = model
@@ -1097,9 +1023,7 @@ mod tests {
     #[test]
     fn yin_tracks_a_clean_sine_without_octave_spikes() {
         let samples: Vec<f32> = (0..32_000)
-            .map(|index| {
-                (2.0 * std::f32::consts::PI * 220.0 * index as f32 / 16_000.0).sin() * 0.2
-            })
+            .map(|index| (2.0 * std::f32::consts::PI * 220.0 * index as f32 / 16_000.0).sin() * 0.2)
             .collect();
         let pitch = extract_pitch_yin(&samples, &EngineConfig::default());
         let voiced: Vec<f32> = pitch.into_iter().filter(|&hz| hz > 0.0).collect();
@@ -1144,15 +1068,6 @@ mod tests {
         smooth_voiced_pitch(&mut pitch, 2);
         assert_eq!(pitch[2], 102.0);
         assert_eq!(pitch[4], 0.0);
-    }
-
-    #[test]
-    fn rms_matching_moves_output_toward_source_level() {
-        let source = vec![0.1_f32; 4_000];
-        let mut output = vec![0.4_f32; 4_000];
-        match_rms_envelope(&source, &mut output, 40_000, 0.0);
-        let mean = output.iter().sum::<f32>() / output.len() as f32;
-        assert!((mean - 0.1).abs() < 0.002);
     }
 
     #[test]
