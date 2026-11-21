@@ -59,5 +59,5 @@ on Linux). Both are pinned and checked with SHA-256 before use. See
 
 ## License
 
-[Apache License 2.0](LICENSE). See
+[Mozilla Public License 2.0](LICENSE). See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party portions.

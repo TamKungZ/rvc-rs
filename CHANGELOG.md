@@ -18,6 +18,7 @@ reference RVC WebUI pipeline.
 
 ### Changed
 
+- License changed from Apache-2.0 to MPL-2.0.
 - The `balanced` preset and the default generator noise scale now match RVC
   WebUI defaults.
 - Faster decoder on CPU; a 20 s clip converts about twice as fast.

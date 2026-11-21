@@ -80,14 +80,14 @@ jobs:
         run: |
           New-Item -ItemType Directory $env:PACKAGE | Out-Null
           Copy-Item target/${{ matrix.target }}/release/rvc-rs.exe, target/${{ matrix.target }}/release/rvc-rs-inference.exe $env:PACKAGE
-          Copy-Item README.md, CHANGELOG.md, LICENSE, THIRD_PARTY_NOTICES.md, LICENSES $env:PACKAGE -Recurse
+          Copy-Item README.md, CHANGELOG.md, LICENSE, NOTICE, THIRD_PARTY_NOTICES.md $env:PACKAGE
           Compress-Archive -Path $env:PACKAGE -DestinationPath "$env:PACKAGE.zip"
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir "$PACKAGE"
           cp target/${{ matrix.target }}/release/rvc-rs target/${{ matrix.target }}/release/rvc-rs-inference "$PACKAGE"
-          cp -R README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md LICENSES "$PACKAGE"
+          cp README.md CHANGELOG.md LICENSE NOTICE THIRD_PARTY_NOTICES.md "$PACKAGE"
           tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
       - uses: actions/upload-artifact@v4
         with:

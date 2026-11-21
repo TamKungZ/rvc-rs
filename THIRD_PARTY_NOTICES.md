@@ -1,21 +1,25 @@
 # Third-party notices
 
-`rvc-rs` is Apache-2.0 licensed. It uses third-party dependencies under their
-respective licenses.
+`rvc-rs` is licensed under the Mozilla Public License 2.0. It uses third-party
+dependencies under their respective licenses.
 
 ## blazen-audio-vc ContentVec portions
 
-The ContentVec implementation files identified in `LICENSES/MPL-2.0.txt`
-contain portions adapted from `blazen-audio-vc` 0.7.0 and remain available
-under Mozilla Public License 2.0. The complete license and affected-file list
-are included there.
+These files contain portions adapted from `blazen-audio-vc` 0.7.0
+(<https://crates.io/crates/blazen-audio-vc/0.7.0>), also licensed under the
+Mozilla Public License 2.0:
+
+- `crates/rvc-rs-candle/src/content.rs`
+- `crates/rvc-rs-candle/src/feature_extractor.rs`
+- `crates/rvc-rs-candle/src/hubert.rs`
+- `crates/rvc-rs-candle/src/hubert_encoder.rs`
 
 ## Managed models
 
 On first use, `rvc-rs` downloads `hubert_base.pt` and `rmvpe.pt` from the
 MIT-licensed `lj1995/VoiceConversionWebUI` model repository at pinned
 revisions. They are cached outside this source tree and are not part of the
-Apache-2.0 licensed source distribution. See `docs/MODEL_ASSETS.md`.
+MPL-2.0 licensed source distribution. See `docs/MODEL_ASSETS.md`.
 
 ## User model files
 
