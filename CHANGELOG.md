@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1] - 2026-11-21
+
+### Changed
+
+- Updated pthrs to 1.0.0. HuBERT now loads through pthrs instead of Candle's
+  pickle reader, and retrieval uses pthrs whole-buffer blending.
+
 ## [1.0.0] - 2026-11-21
 
 First stable release of offline RVC v2 conversion with output matching the
