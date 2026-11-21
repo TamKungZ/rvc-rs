@@ -83,6 +83,7 @@
 // sibling `feature_extractor.rs` / `hubert_encoder.rs` files).
 #![allow(clippy::needless_pass_by_value)]
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use candle_core::{DType, Device, Tensor};
@@ -179,25 +180,27 @@ impl HubertBase {
     ///
     /// # Errors
     ///
-    /// - [`ContentError::ModelLoad`] if the `.pt` pickle cannot be
-    ///   parsed by candle (corrupted file, wrong dtype, missing tensor,
-    ///   etc.).
+    /// - [`ContentError::ModelLoad`] if `pthrs` cannot decode the
+    ///   checkpoint (corrupted file, missing state dictionary, etc.).
     /// - [`ContentError::Candle`] if any sub-module's `load` surfaces a
     ///   shape / dtype mismatch against the canonical HuBERT-base
     ///   topology.
     pub(super) fn load(weights_path: &Path, device: &Device) -> Result<Self, ContentError> {
-        // `hubert_base.pt` is a fairseq checkpoint: the state-dict lives
-        // under the top-level `model` key (alongside `args`, `cfg`,
-        // `optimizer_history`, …). Plain `from_pth` reads the outer dict and
-        // finds no `feature_extractor.*` tensors, so route through the
-        // state-keyed variant to descend into `model`.
-        let vb = VarBuilder::from_pth_with_state(weights_path, DType::F32, "model", device)
-            .map_err(|e| {
-                ContentError::ModelLoad(format!(
-                    "hubert load: VarBuilder::from_pth_with_state({}, key=model) failed: {e}",
-                    weights_path.display()
-                ))
-            })?;
+        // `hubert_base.pt` is a fairseq checkpoint: the state dictionary lives
+        // under the top-level `model` key, next to fairseq `args`/`cfg`
+        // objects that `pthrs` keeps as inert values.
+        let load_error = |e: pthrs::Error| {
+            ContentError::ModelLoad(format!("hubert load: {}: {e}", weights_path.display()))
+        };
+        let decoded = pthrs::PthArchive::open(weights_path)
+            .and_then(|mut archive| archive.load_floating_f32())
+            .map_err(load_error)?;
+        let mut tensors = HashMap::with_capacity(decoded.len());
+        for (name, tensor) in decoded {
+            let (shape, values) = tensor.into_shape_and_values().map_err(load_error)?;
+            tensors.insert(name, Tensor::from_vec(values, shape, device)?);
+        }
+        let vb = VarBuilder::from_tensors(tensors, DType::F32, device);
         Self::from_vb(vb, device)
     }
 
