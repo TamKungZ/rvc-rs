@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
 use rvc_rs_core::ComputeDevice;
-use rvc_rs_engine::{Engine, EngineConfig, ModelFiles, OfflineJob, QualityPreset};
+use rvc_rs_engine::{
+    Engine, EngineConfig, F0Method, ManagedAsset, ModelFiles, OfflineJob, QualityPreset, HUBERT,
+    RMVPE,
+};
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -58,11 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let device = parse_device(arguments.next().as_deref().unwrap_or("auto"))?;
             reject_extra(arguments)?;
 
-            if !rvc_rs_engine::hubert_is_cached() {
-                eprintln!(
-                    "managed HuBERT is not cached; downloading and verifying it once (189.5 MB)..."
-                );
-            }
+            announce_download(HUBERT);
 
             let mut engine = Engine::new();
             engine.set_config(EngineConfig {
@@ -96,10 +95,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let output_audio = required(&mut arguments, "output.wav")?;
             let config = parse_convert_options(arguments.collect(), index.is_some())?;
 
-            if !rvc_rs_engine::hubert_is_cached() {
-                eprintln!(
-                    "managed HuBERT is not cached; downloading and verifying it once (189.5 MB)..."
-                );
+            announce_download(HUBERT);
+            if config.f0_method == F0Method::Rmvpe {
+                announce_download(RMVPE);
             }
 
             let mut engine = Engine::new();
@@ -129,15 +127,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("native checkpoint loader: .pth -> pthrs -> Candle tensors");
             println!("native retrieval: FAISS IVF-Flat .index via pthrs");
             println!("desktop app: egui/eframe 0.36.1");
-            println!("offline v2 path: native ContentVec + DSP F0 + RVC generator");
-            println!(
-                "managed HuBERT: {}",
-                if rvc_rs_engine::hubert_is_cached() {
-                    "cached; integrity is verified before inference"
-                } else {
-                    "will download automatically on first conversion"
-                }
-            );
+            println!("offline v2 path: native ContentVec + RMVPE/YIN F0 + RVC generator");
+            for asset in [HUBERT, RMVPE] {
+                println!(
+                    "managed {}: {}",
+                    asset.label,
+                    if asset.is_cached() {
+                        "cached; integrity is verified before inference"
+                    } else {
+                        "will download automatically on first conversion"
+                    }
+                );
+            }
             Ok(())
         }
         Some("help") | Some("--help") | Some("-h") | None => {
@@ -152,11 +153,17 @@ fn parse_convert_options(values: Vec<String>, has_index: bool) -> Result<EngineC
     let mut position = 0;
     let mut positional_pitch = None;
     let mut positional_device = None;
-    if values.get(position).is_some_and(|value| !value.starts_with("--")) {
+    if values
+        .get(position)
+        .is_some_and(|value| !value.starts_with("--"))
+    {
         positional_pitch = Some(parse_number::<i8>(&values[position], "pitch shift")?);
         position += 1;
     }
-    if values.get(position).is_some_and(|value| !value.starts_with("--")) {
+    if values
+        .get(position)
+        .is_some_and(|value| !value.starts_with("--"))
+    {
         positional_device = Some(parse_device(&values[position])?);
         position += 1;
     }
@@ -171,9 +178,7 @@ fn parse_convert_options(values: Vec<String>, has_index: bool) -> Result<EngineC
             .ok_or_else(|| format!("missing value after {name}"))?;
         if name == "--preset" {
             preset = QualityPreset::parse(value).ok_or_else(|| {
-                format!(
-                    "invalid preset '{value}'; expected balanced, clean, singing, or identity"
-                )
+                format!("invalid preset '{value}'; expected balanced, clean, singing, or identity")
             })?;
         }
         cursor += 2;
@@ -201,6 +206,10 @@ fn parse_convert_options(values: Vec<String>, has_index: bool) -> Result<EngineC
             "--index-k" => config.retrieval_neighbors = parse_number(value, name)?,
             "--index-nprobe" => config.retrieval_nprobe = parse_number(value, name)?,
             "--protect" => config.protect_rate = parse_number(value, name)?,
+            "--f0-method" => {
+                config.f0_method = F0Method::parse(value)
+                    .ok_or_else(|| format!("invalid F0 method '{value}'; expected rmvpe or yin"))?
+            }
             "--noise-scale" => config.noise_scale = parse_number(value, name)?,
             "--f0-min" => config.f0_min_hz = parse_number(value, name)?,
             "--f0-max" => config.f0_max_hz = parse_number(value, name)?,
@@ -216,6 +225,15 @@ fn parse_convert_options(values: Vec<String>, has_index: bool) -> Result<EngineC
         config.retrieval_rate = 0.0;
     }
     Ok(config)
+}
+
+fn announce_download(asset: ManagedAsset) {
+    if !asset.is_cached() {
+        eprintln!(
+            "managed {} is not cached; downloading and verifying it once...",
+            asset.label
+        );
+    }
 }
 
 fn parse_number<T>(value: &str, name: &str) -> Result<T, String>
@@ -293,6 +311,8 @@ fn print_usage() {
     println!("  --speaker <id>                 --index-rate <0..1>");
     println!("  --index-k <1..32>              --index-nprobe <1..64>");
     println!("  --protect <0..0.5>             --noise-scale <0..1.5>");
+    println!("  --f0-method <rmvpe|yin>");
+    println!("YIN only:");
     println!("  --f0-min <40..300>             --f0-max <300..1600>");
     println!("  --f0-threshold <0.05..0.40>    --f0-filter-radius <0..7>");
     println!("  --rms-mix <0..1>               --gain-db <-24..12>");
