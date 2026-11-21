@@ -1,36 +1,15 @@
 # Managed model assets
 
-## Mandatory HuBERT/ContentVec
+Every conversion needs RVC's shared HuBERT content encoder, and RMVPE when it
+is the selected F0 method. The engine downloads each file once into the user
+cache, writes it to a temporary file, checks the exact size and SHA-256, and
+then moves it into place. Cached files are checked again before every
+conversion and replaced if they do not match.
 
-Every RVC conversion uses one shared content encoder in addition to the selected
-voice `.pth`. `rvc-rs` owns this runtime dependency and does not expose a model
-path in the CLI, GUI, or `ModelFiles` API.
+| File | Revision of `lj1995/VoiceConversionWebUI` | Size | SHA-256 |
+|---|---|---|---|
+| `hubert_base.pt` | `1c75048c96f23f99da4b12909b532b5983290d7d` | 189507909 | `f54b40fd2802423a5643779c4861af1e9ee9c1564dc9d32f54f20b5ffba7db96` |
+| `rmvpe.pt` | `e6d0c1a17da07c33557852f9dfa2bd44cc75737d` | 181184272 | `6d62215f4306e3ca278246188607209f09af3dc77ed4232efdd069798c4ec193` |
 
-On first use the engine downloads the asset to the per-user OS cache through a
-blocking Rust HTTPS client. The transfer is written to a process-specific
-partial file. The engine verifies the exact byte length and SHA-256 digest
-before atomically publishing it as `hubert_base.pt`. Existing cache entries are
-also verified before inference; missing, truncated, or modified files are
-replaced from the pinned source.
-
-| Field | Value |
-|---|---|
-| Repository | `lj1995/VoiceConversionWebUI` |
-| Revision | `1c75048c96f23f99da4b12909b532b5983290d7d` |
-| Filename | `hubert_base.pt` |
-| Size | `189507909` bytes |
-| SHA-256 | `f54b40fd2802423a5643779c4861af1e9ee9c1564dc9d32f54f20b5ffba7db96` |
-| Repository license | MIT |
-
-The model bytes are downloaded at runtime and are not committed to, embedded
-in, or licensed as part of the Apache-2.0 source tree.
-
-## Dependency budget
-
-Managed downloading adds only two direct crates to the engine:
-
-- `ureq` 3.4.0 with default features disabled and only pure-Rust `rustls` HTTPS;
-- `sha2` 0.10.9 for streaming SHA-256 verification.
-
-No async runtime, JSON stack, gzip decoder, Hugging Face SDK, system OpenSSL,
-Python, PyTorch, or shell command is used.
+The repository is MIT licensed. The files are downloaded at runtime and are
+not part of this source tree.

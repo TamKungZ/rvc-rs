@@ -1,53 +1,49 @@
 # Reference testing
 
-## Why it is mandatory
+Audio that sounds plausible can still be numerically wrong, so every model
+block is compared against PyTorch. Python and PyTorch are used only to create
+these references; they are never runtime dependencies.
 
-A model may produce finite, voice-like audio while still being mathematically
-wrong. Listening and shape checks cannot reliably locate convolution padding,
-tensor layout, weight normalization, random noise, or flow mistakes.
+## Fixtures
 
-Python and PyTorch are allowed only to generate trusted development references.
-They are not runtime dependencies.
-
-## Suggested local bundle
+Parity tests read `.dev/`, which is ignored by Git, and skip when a fixture is
+missing:
 
 ```text
-tests/fixtures/local-v2-40k-f0/
-├── manifest.json
-├── model.pth
-├── input/
-│   ├── phone.npy
-│   ├── phone_lengths.npy
-│   ├── pitch.npy
-│   ├── pitchf.npy
-│   └── sid.npy
-└── expected/
-    ├── enc_p.npz
-    ├── flow.npz
-    ├── decoder-blocks.npz
-    └── waveform.npy
+.dev/
+├── model/<name>/*.pth, *.index
+└── reference/
+    ├── <name>/synth/   phone, pitch, pitchf, m_p, logs_p, z, wav
+    ├── hubert/         audio, layer12
+    └── rmvpe/          audio, mel, hidden, f0
 ```
 
-The binary data is ignored by Git. A redacted manifest may be committed.
+All arrays are little-endian `.npy` files. HuBERT and RMVPE tests also use the
+managed models from the user cache.
+
+- `synth`: `SynthesizerTrnMs768NSFsid` from upstream RVC with the checkpoint's
+  config, random phone features, a pitch contour with unvoiced gaps, and every
+  noise source set to zero.
+- `hubert`: layer-12 output of torchaudio's HuBERT-base loaded with
+  `hubert_base.pt`.
+- `rmvpe`: upstream `MelSpectrogram` and `E2E` output on a few seconds of
+  16 kHz audio, plus the decoded F0 with threshold 0.03.
+
+Upstream RVC code is taken from
+`RVC-Project/Retrieval-based-Voice-Conversion-WebUI` at commit
+`7ef19867780cf703841ebafb565a4e47d1ea86ff`.
+
+## Whole-file checks
+
+RVC samples noise, so two upstream runs never match sample for sample. Compare
+the Rust output with one upstream run and use a second upstream run with
+another seed as the noise floor for log-mel distance and F0 agreement.
 
 ## Rules
 
-- Fix Python, PyTorch, NumPy, upstream RVC, and CUDA revisions.
-- Fix all random seeds and put the model in evaluation mode.
-- Record input and output names, dtypes, shapes, and hashes.
-- Disable nondeterministic paths where possible.
+- Pin Python, PyTorch, upstream RVC, and model revisions.
+- Fix seeds and use evaluation mode.
 - Capture intermediate results before Rust optimization or fusion.
-- Compare maximum absolute error, relative error, and RMSE.
-- Reject NaN and infinity before numerical comparison.
-- Establish CPU `f32` tolerance before accelerator tolerances.
-- Document every relaxed tolerance with the responsible operation.
-
-## Provenance
-
-Follow the existing pthrs compatibility convention:
-
-- forgotten user-supplied sources: `Local fixture — original source unknown`;
-- public sources: immutable URL or pinned revision;
-- corrupt sources: record the rejection and never change correct code to accept
-  truncated data.
-
+- Reject NaN and infinity before comparing values.
+- Establish CPU `f32` tolerances before accelerator tolerances.
+- Document every relaxed tolerance with the operation responsible.
