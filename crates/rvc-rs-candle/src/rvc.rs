@@ -6,6 +6,7 @@
 
 #![allow(missing_docs)]
 
+use crate::cpu_conv::CpuConv;
 use crate::{InferenceError, NativeCheckpoint};
 use candle_core::{Device, IndexOp, Tensor, D};
 use candle_nn::{
@@ -621,16 +622,20 @@ impl NsfDecoder {
             let tn = noise.dim(2)?;
             let t = tx.min(tn);
             x = (x.narrow(2, 0, t)? + noise.narrow(2, 0, t)?)?;
-            let mut sum: Option<Tensor> = None;
-            for block in &self.resblocks[i] {
-                let y = block.forward(&x)?;
-                sum = Some(match sum {
-                    Some(v) => (v + y)?,
-                    None => y,
-                });
-            }
-            x = (sum.ok_or_else(|| candle_core::Error::Msg("empty resblock stage".into()))?
-                / self.resblocks[i].len() as f64)?;
+            x = if self.resblocks[i].iter().all(ResBlock::has_cpu_path) {
+                resblock_stage_cpu(&self.resblocks[i], &x)?
+            } else {
+                let mut sum: Option<Tensor> = None;
+                for block in &self.resblocks[i] {
+                    let y = block.forward(&x)?;
+                    sum = Some(match sum {
+                        Some(v) => (v + y)?,
+                        None => y,
+                    });
+                }
+                (sum.ok_or_else(|| candle_core::Error::Msg("empty resblock stage".into()))?
+                    / self.resblocks[i].len() as f64)?
+            };
         }
         let y = self
             .conv_post
@@ -640,13 +645,93 @@ impl NsfDecoder {
     }
 }
 
+fn resblock_stage_cpu(blocks: &[ResBlock], x: &Tensor) -> candle_core::Result<Tensor> {
+    let (_, channels, length) = x.dims3()?;
+    let input = x.squeeze(0)?.t()?.flatten_all()?.to_vec1::<f32>()?;
+    let mut sum = vec![0.0_f32; input.len()];
+    for block in blocks {
+        for (total, value) in sum.iter_mut().zip(block.forward_cpu(&input, length)?) {
+            *total += value;
+        }
+    }
+    let scale = 1.0 / blocks.len() as f32;
+    sum.iter_mut().for_each(|value| *value *= scale);
+    Tensor::from_vec(sum, (length, channels), x.device())?
+        .t()?
+        .contiguous()?
+        .unsqueeze(0)
+}
+
 #[derive(Debug)]
-enum ResBlock {
+struct ResBlock {
+    kind: ResBlockKind,
+    cpu: Option<Vec<(CpuConv, Option<CpuConv>)>>,
+}
+
+#[derive(Debug)]
+enum ResBlockKind {
     One(Vec<(Conv1d, Conv1d)>),
     Two(Vec<Conv1d>),
 }
 
 impl ResBlock {
+    fn has_cpu_path(&self) -> bool {
+        self.cpu.is_some()
+    }
+
+    fn forward_cpu(&self, x: &[f32], length: usize) -> candle_core::Result<Vec<f32>> {
+        let convs = self
+            .cpu
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::Msg("CPU resblock path unavailable".into()))?;
+        let mut x = x.to_vec();
+        for (first, second) in convs {
+            x = match second {
+                Some(second) => {
+                    let y = first.forward(&x, length, LRELU as f32, None)?;
+                    second.forward(&y, length, LRELU as f32, Some(&x))?
+                }
+                None => first.forward(&x, length, LRELU as f32, Some(&x))?,
+            };
+        }
+        Ok(x)
+    }
+
+    fn load(
+        w: &Weights<'_>,
+        p: &str,
+        kernel: usize,
+        dilations: &[usize],
+        kind_one: bool,
+    ) -> Result<Self, InferenceError> {
+        let kind = ResBlockKind::load(w, p, kernel, dilations, kind_one)?;
+        let cpu = if w.0.device().is_cpu() {
+            let cpu_conv = |conv: &Conv1d| {
+                let cfg = conv.config();
+                CpuConv::new(conv.weight(), conv.bias(), cfg.dilation, cfg.padding)
+            };
+            Some(match &kind {
+                ResBlockKind::One(pairs) => pairs
+                    .iter()
+                    .map(|(a, b)| Ok((cpu_conv(a)?, Some(cpu_conv(b)?))))
+                    .collect::<candle_core::Result<Vec<_>>>()?,
+                ResBlockKind::Two(convs) => convs
+                    .iter()
+                    .map(|c| Ok((cpu_conv(c)?, None)))
+                    .collect::<candle_core::Result<Vec<_>>>()?,
+            })
+        } else {
+            None
+        };
+        Ok(Self { kind, cpu })
+    }
+
+    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        self.kind.forward(x)
+    }
+}
+
+impl ResBlockKind {
     fn load(
         w: &Weights<'_>,
         p: &str,

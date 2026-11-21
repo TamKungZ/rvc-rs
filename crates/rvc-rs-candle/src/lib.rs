@@ -4,6 +4,7 @@
 //! Candle backend and the integration boundary between `pthrs` tensors and RVC.
 
 mod content;
+mod cpu_conv;
 mod feature_extractor;
 mod hubert;
 mod hubert_encoder;
