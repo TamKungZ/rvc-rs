@@ -85,7 +85,7 @@ impl RvcSynthesizer {
         let sampled = ((logs.exp()? * noise)? * input.noise_scale as f64)?;
         let z_p = (&mean + sampled)?;
         let z = self.flow.reverse(&z_p, &g)?;
-        self.decoder.forward(&z, &f0, &g, self.sample_rate)
+        self.decoder.forward(&z, &f0, &g, self.sample_rate, true)
     }
 }
 
@@ -600,10 +600,11 @@ impl NsfDecoder {
         f0: &Tensor,
         g: &Tensor,
         sample_rate: u32,
+        source_noise: bool,
     ) -> Result<Vec<f32>, InferenceError> {
         let hop = self.rates.iter().product::<usize>();
         let f0v = f0.i(0)?.to_vec1::<f32>()?;
-        let source = sine_source(&f0v, hop, sample_rate);
+        let source = sine_source(&f0v, hop, sample_rate, source_noise);
         let mut source = Tensor::from_vec(source, (1, 1, f0v.len() * hop), z.device())?;
         source = source.broadcast_mul(&self.source_weight.reshape((1, 1, 1))?)?;
         source = source
@@ -711,7 +712,7 @@ impl ResBlock {
     }
 }
 
-fn sine_source(f0: &[f32], hop: usize, sample_rate: u32) -> Vec<f32> {
+fn sine_source(f0: &[f32], hop: usize, sample_rate: u32, noise: bool) -> Vec<f32> {
     let mut out = Vec::with_capacity(f0.len() * hop);
     // Match RVC SineGen._f02sine: each frame contains the fractional
     // phase for samples 1..=hop, offset by the wrapped cumulative phase
@@ -724,12 +725,14 @@ fn sine_source(f0: &[f32], hop: usize, sample_rate: u32) -> Vec<f32> {
     for &hz in f0 {
         let cycles_per_sample = f64::from(hz) / f64::from(sample_rate);
         for sample in 1..=hop {
-            let noise = gaussian(&mut rng, &mut spare_gaussian);
+            let noise = if noise {
+                gaussian(&mut rng, &mut spare_gaussian)
+            } else {
+                0.0
+            };
             if hz > 0.0 {
                 let phase = accumulated_phase + cycles_per_sample * sample as f64;
-                out.push(
-                    ((phase * std::f64::consts::TAU).sin() * 0.1 + noise * 0.003) as f32,
-                );
+                out.push(((phase * std::f64::consts::TAU).sin() * 0.1 + noise * 0.003) as f32);
             } else {
                 out.push((noise * (0.1 / 3.0)) as f32);
             }
@@ -760,4 +763,142 @@ fn gaussian(rng: &mut u32, spare: &mut Option<f64>) -> f64 {
     let angle = std::f64::consts::TAU * u2;
     *spare = Some(radius * angle.sin());
     radius * angle.cos()
+}
+
+#[cfg(test)]
+pub(crate) mod parity {
+    //! Comparisons against local PyTorch reference tensors.
+    //!
+    //! Fixtures live under `.dev/reference/<model>/` and are never committed.
+    //! Tests skip silently when a fixture is absent.
+
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    pub(crate) fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    pub(crate) struct Npy {
+        pub shape: Vec<usize>,
+        pub f32: Vec<f32>,
+        pub i64: Vec<i64>,
+    }
+
+    pub(crate) fn read_npy(path: &Path) -> Npy {
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(&bytes[..6], b"\x93NUMPY");
+        let (header_len, offset) = if bytes[6] == 1 {
+            (u16::from_le_bytes([bytes[8], bytes[9]]) as usize, 10)
+        } else {
+            (
+                u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+                12,
+            )
+        };
+        let header = std::str::from_utf8(&bytes[offset..offset + header_len]).unwrap();
+        assert!(header.contains("'fortran_order': False"));
+        let shape_text = header.split("'shape': (").nth(1).unwrap();
+        let shape: Vec<usize> = shape_text[..shape_text.find(')').unwrap()]
+            .split(',')
+            .filter_map(|v| v.trim().parse().ok())
+            .collect();
+        let data = &bytes[offset + header_len..];
+        let mut out = Npy {
+            shape,
+            f32: Vec::new(),
+            i64: Vec::new(),
+        };
+        if header.contains("'<f4'") {
+            out.f32 = data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect();
+        } else if header.contains("'<i8'") {
+            out.i64 = data
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| i64::from_le_bytes(*c))
+                .collect();
+        } else {
+            panic!("unsupported npy dtype in {header}");
+        }
+        out
+    }
+
+    pub(crate) fn assert_close(name: &str, actual: &[f32], expected: &[f32], max_abs: f32) {
+        assert_eq!(actual.len(), expected.len(), "{name}: length");
+        assert!(actual.iter().all(|v| v.is_finite()), "{name}: non-finite");
+        let mut worst = 0.0_f32;
+        let mut sq = 0.0_f64;
+        for (a, e) in actual.iter().zip(expected) {
+            let d = (a - e).abs();
+            worst = worst.max(d);
+            sq += f64::from(d * d);
+        }
+        let rmse = (sq / actual.len() as f64).sqrt();
+        eprintln!("{name}: max_abs={worst:.3e} rmse={rmse:.3e}");
+        assert!(worst <= max_abs, "{name}: max_abs {worst} > {max_abs}");
+    }
+
+    fn model_path(name: &str) -> Option<PathBuf> {
+        let dir = workspace_root().join(".dev/model").join(name);
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "pth"))
+    }
+
+    fn check_synthesizer(name: &str) {
+        let reference = workspace_root()
+            .join(".dev/reference")
+            .join(name)
+            .join("synth");
+        let (Some(pth), true) = (model_path(name), reference.join("wav.npy").exists()) else {
+            eprintln!("skipping {name}: fixture missing");
+            return;
+        };
+        let device = Device::Cpu;
+        let checkpoint = NativeCheckpoint::load(&pth, &device).unwrap();
+        let model = RvcSynthesizer::load(&checkpoint).unwrap();
+        let load = |n: &str| read_npy(&reference.join(format!("{n}.npy")));
+        let phone = load("phone");
+        let pitch = load("pitch");
+        let pitchf = load("pitchf");
+        let frames = phone.shape[1];
+        let phone = Tensor::from_vec(phone.f32, (1, frames, 768), &device).unwrap();
+        let coarse = Tensor::from_vec(pitch.i64, (1, frames), &device).unwrap();
+        let f0 = Tensor::from_vec(pitchf.f32, (1, frames), &device).unwrap();
+        let sid = Tensor::from_slice(&[0_i64], (1,), &device).unwrap();
+        let g = model.speakers.forward(&sid).unwrap().unsqueeze(2).unwrap();
+
+        let (mean, logs) = model.text.forward(&phone, &coarse).unwrap();
+        let flat = |t: &Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert_close("m_p", &flat(&mean), &load("m_p").f32, 1e-3);
+        assert_close("logs_p", &flat(&logs), &load("logs_p").f32, 1e-3);
+
+        let z = model.flow.reverse(&mean, &g).unwrap();
+        assert_close("z", &flat(&z), &load("z").f32, 2e-3);
+
+        let expected_z = Tensor::from_vec(load("z").f32, z.shape(), &device).unwrap();
+        let wav = model
+            .decoder
+            .forward(&expected_z, &f0, &g, model.sample_rate, false)
+            .unwrap();
+        assert_close("wav", &wav, &load("wav").f32, 5e-3);
+    }
+
+    #[test]
+    fn synthesizer_matches_pytorch_dear_48k() {
+        check_synthesizer("dear");
+    }
+
+    #[test]
+    fn synthesizer_matches_pytorch_solar_40k() {
+        check_synthesizer("solar");
+    }
 }
