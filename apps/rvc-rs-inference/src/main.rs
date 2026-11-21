@@ -4,7 +4,8 @@ use eframe::egui;
 use rfd::FileDialog;
 use rvc_rs_core::ComputeDevice;
 use rvc_rs_engine::{
-    Engine, EngineConfig, EngineState, ModelFiles, OfflineJob, OfflineReport, QualityPreset,
+    Engine, EngineConfig, EngineState, F0Method, ModelFiles, OfflineJob, OfflineReport,
+    QualityPreset, HUBERT, RMVPE,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -353,7 +354,27 @@ impl InferenceApp {
                         );
                         ui.end_row();
 
-                        ui.label("F0 minimum");
+                        ui.label("F0 method");
+                        egui::ComboBox::from_id_salt("f0_method")
+                            .selected_text(match self.form.config.f0_method {
+                                F0Method::Rmvpe => "RMVPE",
+                                F0Method::Yin => "YIN",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.form.config.f0_method,
+                                    F0Method::Rmvpe,
+                                    "RMVPE",
+                                );
+                                ui.selectable_value(
+                                    &mut self.form.config.f0_method,
+                                    F0Method::Yin,
+                                    "YIN",
+                                );
+                            });
+                        ui.end_row();
+
+                        ui.label("F0 minimum (YIN)");
                         ui.add(
                             egui::Slider::new(&mut self.form.config.f0_min_hz, 40.0..=300.0)
                                 .suffix(" Hz")
@@ -361,7 +382,7 @@ impl InferenceApp {
                         );
                         ui.end_row();
 
-                        ui.label("F0 maximum");
+                        ui.label("F0 maximum (YIN)");
                         ui.add(
                             egui::Slider::new(&mut self.form.config.f0_max_hz, 300.0..=1_600.0)
                                 .suffix(" Hz")
@@ -371,31 +392,23 @@ impl InferenceApp {
 
                         ui.label("YIN threshold");
                         ui.add(
-                            egui::Slider::new(
-                                &mut self.form.config.f0_yin_threshold,
-                                0.05..=0.40,
-                            )
-                            .fixed_decimals(2),
+                            egui::Slider::new(&mut self.form.config.f0_yin_threshold, 0.05..=0.40)
+                                .fixed_decimals(2),
                         );
                         ui.end_row();
 
-                        ui.label("F0 median radius");
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.form.config.f0_filter_radius,
-                                0..=7,
-                            ),
-                        );
+                        ui.label("F0 median radius (YIN)");
+                        ui.add(egui::Slider::new(
+                            &mut self.form.config.f0_filter_radius,
+                            0..=7,
+                        ));
                         ui.end_row();
 
                         ui.label("Output gain");
                         ui.add(
-                            egui::Slider::new(
-                                &mut self.form.config.output_gain_db,
-                                -24.0..=12.0,
-                            )
-                            .suffix(" dB")
-                            .fixed_decimals(1),
+                            egui::Slider::new(&mut self.form.config.output_gain_db, -24.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1),
                         );
                         ui.end_row();
                     });
@@ -469,14 +482,15 @@ impl InferenceApp {
                 let job = self.offline_job();
                 match self.engine.begin_offline(&job) {
                     Ok(task) => {
-                        if !rvc_rs_engine::hubert_is_cached() {
-                            self.push_message(
-                                concat!(
-                                    "Downloading and verifying the mandatory managed HuBERT model ",
-                                    "once (189.5 MB)…"
-                                )
-                                .to_owned(),
-                            );
+                        let mut assets = vec![HUBERT];
+                        if self.form.config.f0_method == F0Method::Rmvpe {
+                            assets.push(RMVPE);
+                        }
+                        for asset in assets.into_iter().filter(|asset| !asset.is_cached()) {
+                            self.push_message(format!(
+                                "Downloading and verifying the managed {} model once…",
+                                asset.label
+                            ));
                         }
                         let (sender, receiver) = mpsc::channel();
                         std::thread::spawn(move || {
