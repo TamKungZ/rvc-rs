@@ -7,9 +7,11 @@ mod content;
 mod feature_extractor;
 mod hubert;
 mod hubert_encoder;
+mod rmvpe;
 mod rvc;
 
 pub use content::{ContentEncoder, ContentError, RvcVersion};
+pub use rmvpe::{decode_salience, Rmvpe, RMVPE_HOP, RMVPE_SAMPLE_RATE};
 
 use candle_core::{Device, Tensor};
 use rvc_rs_core::{ComputeDevice, GeneratorInput, InputError, ModelSpec, VoiceGenerator};
