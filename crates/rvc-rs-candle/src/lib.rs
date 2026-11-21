@@ -41,36 +41,12 @@ impl NativeCheckpoint {
     /// Opens, validates, decodes, and transfers every generator tensor once.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self, InferenceError> {
         let path = path.as_ref();
-        let mut archive = pthrs::PthArchive::open(path)?;
-        let info = archive.checkpoint().voice_model_info()?;
-        let validation = info.validate(archive.checkpoint());
-        if !validation.errors.is_empty() {
-            return Err(InferenceError::InvalidCheckpoint(
-                validation.errors.join("; "),
-            ));
-        }
+        let (mut archive, info) = pthrs::PthArchive::open_voice_model(path)?;
         let spec = model_spec_from_info(&info)?;
-        let names: Vec<String> = archive
-            .checkpoint()
-            .tensor_names()
-            .map(str::to_owned)
-            .collect();
         let mut weights = BTreeMap::new();
-        for name in names {
-            let decoded = archive.read_tensor_f32(&name)?;
-            let shape = decoded
-                .meta
-                .shape
-                .iter()
-                .map(|&dimension| {
-                    usize::try_from(dimension).map_err(|_| InferenceError::TensorDimension {
-                        name: name.clone(),
-                        dimension,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let tensor = Tensor::from_vec(decoded.values, shape.as_slice(), device)?;
-            weights.insert(name, tensor);
+        for (name, decoded) in archive.load_all_f32()? {
+            let (shape, values) = decoded.into_shape_and_values()?;
+            weights.insert(name, Tensor::from_vec(values, shape, device)?);
         }
         Ok(Self {
             path: path.to_owned(),
@@ -125,12 +101,11 @@ impl NativeCheckpoint {
 /// In-memory FAISS IVF-Flat retrieval state for the real-time worker.
 ///
 /// The index and search workspace are allocated at startup. Frame blending
-/// reuses one scratch vector and performs no per-frame heap allocation.
+/// performs no heap allocation.
 #[derive(Debug)]
 pub struct RetrievalIndex {
     index: pthrs::LoadedIvfFlatIndex,
     workspace: pthrs::SearchWorkspace,
-    output: Vec<f32>,
     max_neighbors: usize,
 }
 
@@ -157,7 +132,6 @@ impl RetrievalIndex {
         Ok(Self {
             index,
             workspace,
-            output: vec![0.0; feature_dimension],
             max_neighbors,
         })
     }
@@ -202,36 +176,21 @@ impl RetrievalIndex {
                 "k exceeds the preallocated neighbor capacity",
             ));
         }
-        let mut retrieved_neighbors = 0;
-        for frame in features.chunks_exact_mut(dimension) {
-            retrieved_neighbors += self.index.search_and_blend(
-                frame,
-                &mut self.output,
-                pthrs::SearchOptions { k, nprobe },
-                rate,
-                &mut self.workspace,
-            )?;
-            frame.copy_from_slice(&self.output);
-        }
-        Ok(retrieved_neighbors)
+        Ok(self.index.blend_frames(
+            features,
+            pthrs::SearchOptions { k, nprobe },
+            rate,
+            &mut self.workspace,
+        )?)
     }
 }
 
 fn model_spec_from_info(info: &pthrs::VoiceModelInfo) -> Result<ModelSpec, InferenceError> {
     use rvc_rs_core::{ModelVersion, SampleRate};
 
-    let version = match (
-        info.architecture_version.as_deref(),
-        info.phone_feature_channels,
-    ) {
-        (Some("v1"), _) | (_, Some(256)) => ModelVersion::V1,
-        (Some("v2"), _) | (_, Some(768)) => ModelVersion::V2,
-        (label, channels) => {
-            return Err(InferenceError::UnsupportedArchitecture {
-                version: label.map(str::to_owned),
-                phone_channels: channels,
-            })
-        }
+    let version = match info.architecture()? {
+        pthrs::ArchitectureVersion::V1 => ModelVersion::V1,
+        pthrs::ArchitectureVersion::V2 => ModelVersion::V2,
     };
     let sample_rate = match info.config.sample_rate {
         32_000 => SampleRate::Hz32000,
@@ -410,27 +369,9 @@ pub enum InferenceError {
         /// Number of decoded values.
         values: usize,
     },
-    /// A checkpoint dimension cannot be represented on this platform.
-    #[error("tensor {name} dimension {dimension} does not fit usize")]
-    TensorDimension {
-        /// Checkpoint tensor name.
-        name: String,
-        /// Rejected dimension.
-        dimension: u64,
-    },
     /// Checkpoint metadata or required tensors are inconsistent.
     #[error("invalid RVC checkpoint: {0}")]
     InvalidCheckpoint(String),
-    /// Neither the version label nor the phone width identifies v1/v2.
-    #[error(
-        "unsupported RVC architecture: version={version:?}, phone_channels={phone_channels:?}"
-    )]
-    UnsupportedArchitecture {
-        /// Optional checkpoint version label.
-        version: Option<String>,
-        /// Optional phone feature width.
-        phone_channels: Option<u32>,
-    },
     /// Generator output rate is outside the currently mapped RVC variants.
     #[error("unsupported RVC sample rate: {0}")]
     UnsupportedSampleRate(u32),

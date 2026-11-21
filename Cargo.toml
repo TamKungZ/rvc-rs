@@ -37,7 +37,7 @@ eframe = { version = "=0.36.1", default-features = false, features = [
     "wayland",
     "x11",
 ] }
-pthrs = "=0.2.0"
+pthrs = "=1.0.0"
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

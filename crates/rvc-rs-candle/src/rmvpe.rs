@@ -52,18 +52,11 @@ pub struct Rmvpe {
 impl Rmvpe {
     /// Loads an upstream `rmvpe.pt` state dictionary through `pthrs`.
     pub fn load(path: impl AsRef<Path>, device: &Device) -> Result<Self, InferenceError> {
-        let mut archive = pthrs::PthArchive::open(path.as_ref())?;
-        let names: Vec<String> = archive
-            .checkpoint()
-            .tensor_names()
-            .filter(|name| !name.ends_with("num_batches_tracked"))
-            .map(str::to_owned)
-            .collect();
+        // Only BatchNorm's integer `num_batches_tracked` counters are skipped;
+        // they are training state and unused at inference.
         let mut tensors = BTreeMap::new();
-        for name in names {
-            let decoded = archive.read_tensor_f32(&name)?;
-            let shape: Vec<usize> = decoded.meta.shape.iter().map(|&d| d as usize).collect();
-            tensors.insert(name, (shape, decoded.values));
+        for (name, decoded) in pthrs::PthArchive::open(path.as_ref())?.load_floating_f32()? {
+            tensors.insert(name, decoded.into_shape_and_values()?);
         }
         let w = RmvpeWeights {
             tensors: &tensors,

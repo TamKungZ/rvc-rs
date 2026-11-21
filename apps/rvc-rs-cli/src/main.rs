@@ -122,7 +122,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("status") => {
             reject_extra(arguments)?;
             println!("rvc-rs {}", env!("CARGO_PKG_VERSION"));
-            println!("checkpoint/index: pthrs 0.2.0");
+            println!("checkpoint/index: pthrs 1.0.0");
             println!("tensor backend: Candle 0.11.0");
             println!("native checkpoint loader: .pth -> pthrs -> Candle tensors");
             println!("native retrieval: FAISS IVF-Flat .index via pthrs");

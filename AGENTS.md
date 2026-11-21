@@ -11,7 +11,7 @@ runtime dependency; alternative runtimes belong in detached adapter crates.
 
 ```text
 fixed content + pitch + speaker tensors
--> weights loaded from .pth by pthrs 0.2.0
+-> weights loaded from .pth by pthrs 1.0.0
 -> Candle RVC v2/40k/F0 forward pass
 -> mono waveform matching a trusted PyTorch reference
 ```

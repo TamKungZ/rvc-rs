@@ -3294,9 +3294,9 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "pthrs"
-version = "0.2.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60d8e7bb04618bf20f8554b30b05b13ca5db5ade1b0e6429bf25edb362c9d73a"
+checksum = "6dc754ef49b99fb0f06cd956bc29c21d201f22782643829e6f9d00976c759129"
 
 [[package]]
 name = "pulp"
