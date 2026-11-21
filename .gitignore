@@ -10,4 +10,4 @@
 *.safetensors
 !tests/fixtures/**/*.json
 !tests/fixtures/**/*.md
-
+.dev/
